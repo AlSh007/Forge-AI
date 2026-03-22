@@ -1,0 +1,21 @@
+{
+  "name": "forgeai",
+  "version": "0.1.0",
+  "description": "Autonomous AI Coding Agents Platform",
+  "private": true,
+  "workspaces": [
+    "backend",
+    "frontend",
+    "agent-core"
+  ],
+  "scripts": {
+    "dev": "npm run dev -w backend & npm run dev -w frontend & npm run dev -w agent-core",
+    "build": "npm run build -w backend && npm run build -w frontend && npm run build -w agent-core",
+    "test": "npm run test -w backend && npm run test -w frontend && npm run test -w agent-core",
+    "lint": "npm run lint -w backend && npm run lint -w frontend && npm run lint -w agent-core",
+    "install:all": "npm install && npm install -w backend && npm install -w frontend && npm install -w agent-core"
+  },
+  "devDependencies": {
+    "typescript": "^5.3.0"
+  }
+}
