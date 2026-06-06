@@ -2,7 +2,7 @@
 export interface Agent {
   name: string;
   type: AgentType;
-  run(input: string, context: any): Promise<string>;
+  run(input: string, context: ExecutionContext): Promise<string>;
 }
 
 export enum AgentType {
@@ -18,7 +18,7 @@ export enum AgentType {
 export interface Tool {
   name: string;
   description: string;
-  execute(input: any): Promise<any>;
+  execute(input: unknown): Promise<unknown>;
 }
 
 // Agent execution result
@@ -27,6 +27,25 @@ export interface AgentResult {
   output: string;
   logs: string[];
   errors?: string[];
+}
+
+export interface AgentStepResult {
+  agentType: AgentType;
+  agentName: string;
+  output?: string;
+  error?: string;
+}
+
+export interface TaskExecutionResult {
+  success: boolean;
+  steps: AgentStepResult[];
+  plan?: string;
+  design?: string;
+  dbChanges?: string;
+  backendCode?: string;
+  frontendCode?: string;
+  validation?: string;
+  error?: string;
 }
 
 // Task execution context

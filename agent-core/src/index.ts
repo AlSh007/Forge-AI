@@ -1,5 +1,5 @@
-import { ExecutionContext } from './types';
-import { 
+import { AgentStepResult, ExecutionContext, TaskExecutionResult } from './types';
+import {
   ProductManagerAgent,
   ArchitectAgent,
   BackendAgent,
@@ -19,44 +19,23 @@ export class AgentCoordinator {
     devops: new DevOpsAgent(),
   };
 
-  async executeTask(prompt: string, context: ExecutionContext): Promise<any> {
-    console.log(`\n📋 Starting task execution for: ${prompt}\n`);
+  async executeTask(prompt: string, context: ExecutionContext): Promise<TaskExecutionResult> {
+    const steps: AgentStepResult[] = [];
+    console.log(`\nStarting task execution for: ${prompt}\n`);
 
     try {
-      // Step 1: Product Manager breaks down the task
-      console.log('1️⃣  Planning...');
-      const plan = await this.agents.productManager.run(prompt, context);
-      console.log('Plan:', plan);
+      const plan = await this.runStep(this.agents.productManager, prompt, context, steps);
+      const design = await this.runStep(this.agents.architect, prompt, context, steps);
+      const dbChanges = await this.runStep(this.agents.database, prompt, context, steps);
+      const backendCode = await this.runStep(this.agents.backend, prompt, context, steps);
+      const frontendCode = await this.runStep(this.agents.frontend, prompt, context, steps);
+      const validation = await this.runStep(this.agents.devops, prompt, context, steps);
 
-      // Step 2: Architect designs approach
-      console.log('\n2️⃣  Designing architecture...');
-      const design = await this.agents.architect.run(prompt, context);
-      console.log('Design:', design);
+      console.log('\nTask execution completed');
 
-      // Step 3: Parallel implementation (would be parallel in production)
-      console.log('\n3️⃣  Implementing...');
-      
-      // Database changes first
-      const dbChanges = await this.agents.database.run(prompt, context);
-      console.log('Database:', dbChanges);
-
-      // Backend implementation
-      const backendCode = await this.agents.backend.run(prompt, context);
-      console.log('Backend:', backendCode);
-
-      // Frontend implementation
-      const frontendCode = await this.agents.frontend.run(prompt, context);
-      console.log('Frontend:', frontendCode);
-
-      // Step 4: Validation
-      console.log('\n4️⃣  Validating...');
-      const validation = await this.agents.devops.run(prompt, context);
-      console.log('Validation:', validation);
-
-      console.log('\n✅ Task execution completed');
-      
       return {
         success: true,
+        steps,
         plan,
         design,
         dbChanges,
@@ -65,11 +44,40 @@ export class AgentCoordinator {
         validation,
       };
     } catch (error) {
-      console.error('❌ Task execution failed:', error);
+      console.error('Task execution failed:', error);
       return {
         success: false,
+        steps,
         error: error instanceof Error ? error.message : 'Unknown error',
       };
+    }
+  }
+
+  private async runStep(
+    agent: {
+      name: string;
+      type: AgentStepResult['agentType'];
+      run: (input: string, context: ExecutionContext) => Promise<string>;
+    },
+    prompt: string,
+    context: ExecutionContext,
+    steps: AgentStepResult[]
+  ): Promise<string> {
+    try {
+      const output = await agent.run(prompt, context);
+      steps.push({
+        agentType: agent.type,
+        agentName: agent.name,
+        output,
+      });
+      return output;
+    } catch (error) {
+      steps.push({
+        agentType: agent.type,
+        agentName: agent.name,
+        error: error instanceof Error ? error.message : 'Unknown error',
+      });
+      throw error;
     }
   }
 }
@@ -88,5 +96,7 @@ if (require.main === module) {
     },
   };
 
-  coordinator.executeTask('Add JWT authentication to the API', context);
+  void coordinator.executeTask('Add JWT authentication to the API', context);
 }
+
+export * from './types';

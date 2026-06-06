@@ -2,8 +2,10 @@
   "name": "forgeai-agent-core",
   "version": "0.1.0",
   "private": true,
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
   "scripts": {
-    "dev": "ts-node src/index.ts",
+    "dev": "tsc -w --preserveWatchOutput",
     "build": "tsc",
     "test": "jest",
     "lint": "eslint src"
