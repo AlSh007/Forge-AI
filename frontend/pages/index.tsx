@@ -1,8 +1,10 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { AxiosError } from 'axios';
 import { TaskForm, TaskFormValues } from '../components/TaskForm';
-import { TaskDetails, TaskStatus, executionApi, taskApi } from '../lib/api';
+import { AgentExecutionRecord, AgentType, TaskDetails, TaskStatus, executionApi, taskApi } from '../lib/api';
 import { useTaskStore } from '../lib/store';
+
+const ACTIVE_STATUSES: TaskStatus[] = ['PENDING', 'PLANNING', 'IN_PROGRESS', 'VALIDATING'];
 
 const statusClasses: Record<TaskStatus, string> = {
   PENDING: 'bg-slate-500/20 text-slate-200 border-slate-400/30',
@@ -14,32 +16,127 @@ const statusClasses: Record<TaskStatus, string> = {
   CANCELLED: 'bg-slate-500/20 text-slate-300 border-slate-400/30',
 };
 
+const PIPELINE_AGENTS: { type: AgentType; label: string; desc: string }[] = [
+  { type: 'PRODUCT_MANAGER', label: 'Product Manager', desc: 'Task planning & requirements' },
+  { type: 'ARCHITECT', label: 'Architect', desc: 'Technical design & structure' },
+  { type: 'DATABASE', label: 'Database', desc: 'Schema & migration changes' },
+  { type: 'BACKEND', label: 'Backend', desc: 'Server-side code generation' },
+  { type: 'FRONTEND', label: 'Frontend', desc: 'UI component generation' },
+  { type: 'DEVOPS', label: 'DevOps', desc: 'Validation & quality review' },
+];
+
+type AgentPipelineStatus = 'pending' | 'running' | 'done' | 'failed';
+
+function getAgentStatus(agentType: AgentType, executions: AgentExecutionRecord[]): AgentPipelineStatus {
+  const exec = executions.find((e) => e.agentType === agentType);
+  if (!exec) return 'pending';
+  if (exec.status === 'RUNNING') return 'running';
+  if (exec.status === 'SUCCESS') return 'done';
+  if (exec.status === 'FAILED') return 'failed';
+  return 'pending';
+}
+
+function getOutputPreview(output: string): string {
+  try {
+    const parsed = JSON.parse(output) as { files?: { path: string }[]; description?: string };
+    if (parsed.files && parsed.files.length > 0) {
+      const count = parsed.files.length;
+      const paths = parsed.files
+        .slice(0, 3)
+        .map((f) => f.path)
+        .join(', ');
+      return `${count} file${count === 1 ? '' : 's'}: ${paths}${count > 3 ? ', ...' : ''}`;
+    }
+    if (parsed.description) return parsed.description;
+  } catch {
+    // plain text output
+  }
+  return output.replace(/\n/g, ' ').slice(0, 120);
+}
+
 function formatStatus(status: TaskStatus): string {
   return status.replace(/_/g, ' ');
 }
 
-function prettyPrintPlan(plan: string | null): string {
-  if (!plan) {
-    return 'No plan available yet.';
-  }
-
-  try {
-    return JSON.stringify(JSON.parse(plan), null, 2);
-  } catch {
-    return plan;
-  }
-}
-
 function getErrorMessage(error: unknown): string {
   if (error instanceof AxiosError) {
-    return error.response?.data?.error ?? error.message;
+    return (error.response?.data as { error?: string })?.error ?? error.message;
   }
-
-  if (error instanceof Error) {
-    return error.message;
-  }
-
+  if (error instanceof Error) return error.message;
   return 'Something went wrong while talking to the API.';
+}
+
+function AgentPipeline({ task }: { task: TaskDetails }) {
+  const isActive = ACTIVE_STATUSES.includes(task.status);
+
+  return (
+    <div>
+      <div className="flex items-center gap-3 mb-3">
+        <p className="text-sm text-slate-400">Agent Pipeline</p>
+        {isActive && (
+          <span className="flex items-center gap-1.5 text-xs text-blue-300">
+            <span className="inline-block h-1.5 w-1.5 rounded-full bg-blue-400 animate-pulse" />
+            Live
+          </span>
+        )}
+      </div>
+      <div className="rounded-xl border border-slate-800 bg-slate-950/50 divide-y divide-slate-800/60">
+        {PIPELINE_AGENTS.map((agent, index) => {
+          const status = getAgentStatus(agent.type, task.executions);
+          const exec = task.executions.find((e) => e.agentType === agent.type);
+
+          const dotClass =
+            status === 'done'
+              ? 'bg-emerald-400'
+              : status === 'running'
+              ? 'bg-blue-400 animate-pulse ring-4 ring-blue-400/20'
+              : status === 'failed'
+              ? 'bg-rose-400'
+              : 'bg-slate-700';
+
+          const labelClass =
+            status === 'pending' ? 'text-slate-500' : 'text-white';
+
+          return (
+            <div key={agent.type} className="flex items-start gap-4 px-4 py-3">
+              <div className="mt-2 flex-shrink-0 flex flex-col items-center gap-1">
+                <div className={`h-2.5 w-2.5 rounded-full ${dotClass}`} />
+                {index < PIPELINE_AGENTS.length - 1 && (
+                  <div className="w-px h-3 bg-slate-800" />
+                )}
+              </div>
+              <div className="flex-1 min-w-0 pb-1">
+                <div className="flex items-center justify-between gap-2">
+                  <span className={`font-semibold text-sm ${labelClass}`}>{agent.label}</span>
+                  {status === 'running' && (
+                    <span className="text-xs text-blue-300 animate-pulse">Working...</span>
+                  )}
+                  {status === 'done' && (
+                    <span className="text-xs text-emerald-400">Done</span>
+                  )}
+                  {status === 'failed' && (
+                    <span className="text-xs text-rose-400">Failed</span>
+                  )}
+                  {status === 'pending' && (
+                    <span className="text-xs text-slate-600">{index + 1}</span>
+                  )}
+                </div>
+                <p className="text-xs text-slate-600 mt-0.5">{agent.desc}</p>
+                {exec?.output && status === 'done' && (
+                  <p className="text-xs text-slate-400 mt-1 line-clamp-2">
+                    {getOutputPreview(exec.output)}
+                  </p>
+                )}
+                {exec?.error && status === 'failed' && (
+                  <p className="text-xs text-rose-400/80 mt-1 line-clamp-2">{exec.error}</p>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
 }
 
 export default function Home() {
@@ -47,17 +144,45 @@ export default function Home() {
   const [loadingTasks, setLoadingTasks] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
     void loadTasks();
   }, []);
+
+  // Poll every 2s while the current task is in an active state
+  useEffect(() => {
+    if (pollingRef.current) {
+      clearInterval(pollingRef.current);
+      pollingRef.current = null;
+    }
+
+    if (!currentTask || !ACTIVE_STATUSES.includes(currentTask.status)) return;
+
+    const taskId = currentTask.id;
+    pollingRef.current = setInterval(async () => {
+      try {
+        const response = await taskApi.getById(taskId);
+        updateTask(response.task.id, response.task);
+        setCurrentTask(response.task);
+      } catch {
+        // ignore transient errors during polling
+      }
+    }, 2000);
+
+    return () => {
+      if (pollingRef.current) {
+        clearInterval(pollingRef.current);
+        pollingRef.current = null;
+      }
+    };
+  }, [currentTask?.id, currentTask?.status]);
 
   const loadTasks = async () => {
     setLoadingTasks(true);
     try {
       const response = await taskApi.getAll();
       setTasks(response.tasks);
-
       if (!currentTask && response.tasks.length > 0) {
         setCurrentTask(response.tasks[0]);
       }
@@ -87,16 +212,12 @@ export default function Home() {
       addTask(createdTaskResponse.task);
       setCurrentTask(createdTaskResponse.task);
 
-      const executedTaskResponse = await executionApi.startExecution(createdTaskResponse.task.id);
-      updateTask(executedTaskResponse.task.id, executedTaskResponse.task);
-      setCurrentTask(executedTaskResponse.task);
-
-      const refreshedTasks = await taskApi.getAll();
-      setTasks(refreshedTasks.tasks);
+      // 202 — execution starts in background; polling kicks in via the effect above
+      const startResponse = await executionApi.startExecution(createdTaskResponse.task.id);
+      updateTask(startResponse.task.id, startResponse.task);
+      setCurrentTask(startResponse.task);
     } catch (submitError) {
-      const message = getErrorMessage(submitError);
-      setError(message);
-      throw submitError;
+      setError(getErrorMessage(submitError));
     } finally {
       setSubmitting(false);
     }
@@ -109,10 +230,9 @@ export default function Home() {
       <div className="max-w-6xl mx-auto px-4 py-12">
         <div className="mb-12">
           <p className="text-sm uppercase tracking-[0.35em] text-blue-300 mb-4">ForgeAI</p>
-          <h1 className="text-5xl font-bold text-white mb-4">Autonomous Task Execution Dashboard</h1>
+          <h1 className="text-5xl font-bold text-white mb-4">Autonomous Task Execution</h1>
           <p className="max-w-3xl text-lg text-slate-300">
-            The first working slice now creates tasks, runs the coordinator, and shows stored
-            execution history from the API.
+            Submit a development task and watch 6 specialized AI agents plan, design, and generate code in real time.
           </p>
         </div>
 
@@ -124,9 +244,7 @@ export default function Home() {
               <div className="flex items-center justify-between gap-4 mb-6">
                 <div>
                   <h2 className="text-2xl font-bold text-white">Current Task</h2>
-                  <p className="text-slate-400">
-                    Inspect the stored plan, execution steps, and backend logs.
-                  </p>
+                  <p className="text-slate-400">Live agent progress and execution results.</p>
                 </div>
                 {selectedTask ? (
                   <span
@@ -156,64 +274,42 @@ export default function Home() {
                     </a>
                   </div>
 
-                  <div>
-                    <p className="text-sm text-slate-400 mb-2">Generated Plan</p>
-                    <pre className="overflow-x-auto rounded-xl bg-slate-950/70 border border-slate-800 p-4 text-sm text-slate-200">
-                      {prettyPrintPlan(selectedTask.plan)}
-                    </pre>
-                  </div>
+                  <AgentPipeline task={selectedTask} />
 
-                  <div>
-                    <p className="text-sm text-slate-400 mb-3">Execution Steps</p>
-                    <div className="space-y-3">
-                      {selectedTask.executions.length > 0 ? (
-                        selectedTask.executions.map((execution) => (
-                          <div
-                            key={execution.id}
-                            className="rounded-xl border border-slate-800 bg-slate-950/50 p-4"
-                          >
-                            <div className="flex items-center justify-between gap-4 mb-2">
-                              <p className="text-sm font-semibold text-white">
-                                {execution.agentType.replace(/_/g, ' ')}
-                              </p>
-                              <span className="text-xs text-slate-400">{execution.status}</span>
-                            </div>
-                            <p className="text-sm text-slate-300 whitespace-pre-wrap">
-                              {execution.output ?? execution.logs ?? execution.error ?? 'No output'}
-                            </p>
-                          </div>
-                        ))
-                      ) : (
-                        <p className="text-slate-400">No executions recorded yet.</p>
-                      )}
+                  {selectedTask.plan && (
+                    <div>
+                      <p className="text-sm text-slate-400 mb-2">Generated Plan</p>
+                      <pre className="overflow-x-auto rounded-xl bg-slate-950/70 border border-slate-800 p-4 text-sm text-slate-200 whitespace-pre-wrap">
+                        {selectedTask.plan}
+                      </pre>
                     </div>
-                  </div>
+                  )}
 
-                  <div>
-                    <p className="text-sm text-slate-400 mb-3">Execution Log</p>
-                    <div className="space-y-2">
-                      {selectedTask.logs.length > 0 ? (
-                        selectedTask.logs.map((log) => (
+                  {selectedTask.logs.length > 0 && (
+                    <div>
+                      <p className="text-sm text-slate-400 mb-3">Execution Log</p>
+                      <div className="space-y-2 max-h-64 overflow-y-auto">
+                        {selectedTask.logs.map((log) => (
                           <div
                             key={log.id}
                             className="rounded-xl border border-slate-800 bg-slate-950/50 px-4 py-3"
                           >
                             <div className="flex items-center justify-between gap-4 text-xs text-slate-400 mb-1">
-                              <span>{log.level}</span>
-                              <span>{new Date(log.createdAt).toLocaleString()}</span>
+                              <span className={log.level === 'ERROR' ? 'text-rose-400' : log.level === 'WARN' ? 'text-amber-400' : ''}>
+                                {log.level}
+                              </span>
+                              <span>{new Date(log.createdAt).toLocaleTimeString()}</span>
                             </div>
                             <p className="text-sm text-slate-200">{log.message}</p>
                           </div>
-                        ))
-                      ) : (
-                        <p className="text-slate-400">No logs available yet.</p>
-                      )}
+                        ))}
+                      </div>
                     </div>
-                  </div>
+                  )}
                 </div>
               ) : (
                 <p className="text-slate-400">
-                  Create your first task to see the execution timeline show up here.
+                  Submit a task to see the live agent pipeline.
                 </p>
               )}
             </section>
@@ -222,9 +318,7 @@ export default function Home() {
           <div className="space-y-8">
             <section className="bg-slate-900/80 border border-slate-700 rounded-2xl p-8 shadow-xl">
               <h2 className="text-2xl font-bold text-white mb-2">Recent Tasks</h2>
-              <p className="text-slate-400 mb-6">
-                Click any task to inspect its latest persisted state.
-              </p>
+              <p className="text-slate-400 mb-6">Click any task to inspect its execution.</p>
 
               {loadingTasks ? (
                 <p className="text-slate-400">Loading tasks...</p>
@@ -234,10 +328,10 @@ export default function Home() {
                     <button
                       key={task.id}
                       type="button"
-                      onClick={() => {
-                        void selectTask(task.id);
-                      }}
-                      className="w-full text-left rounded-2xl border border-slate-800 bg-slate-950/60 p-4 hover:border-blue-400/40 transition"
+                      onClick={() => { void selectTask(task.id); }}
+                      className={`w-full text-left rounded-2xl border bg-slate-950/60 p-4 hover:border-blue-400/40 transition ${
+                        currentTask?.id === task.id ? 'border-blue-400/40' : 'border-slate-800'
+                      }`}
                     >
                       <div className="flex items-start justify-between gap-4 mb-2">
                         <p className="font-semibold text-white line-clamp-2">{task.prompt}</p>
@@ -248,22 +342,32 @@ export default function Home() {
                         </span>
                       </div>
                       <p className="text-sm text-slate-400 break-all">{task.repositoryUrl}</p>
+                      {ACTIVE_STATUSES.includes(task.status) && (
+                        <div className="flex items-center gap-1.5 mt-2 text-xs text-blue-300">
+                          <span className="inline-block h-1.5 w-1.5 rounded-full bg-blue-400 animate-pulse" />
+                          Running
+                        </div>
+                      )}
                     </button>
                   ))}
                 </div>
               ) : (
-                <p className="text-slate-400">
-                  No tasks yet. Submit one from the panel on the left to seed the timeline.
-                </p>
+                <p className="text-slate-400">No tasks yet. Submit one to get started.</p>
               )}
             </section>
 
             <section className="bg-slate-900/80 border border-slate-700 rounded-2xl p-8 shadow-xl">
-              <h2 className="text-2xl font-bold text-white mb-4">What This Slice Proves</h2>
-              <div className="space-y-4 text-slate-300">
-                <p>Tasks are persisted through the backend instead of living only in the UI.</p>
-                <p>The agent coordinator runs and writes step-by-step execution history.</p>
-                <p>The dashboard now reflects task state, plan output, and execution logs.</p>
+              <h2 className="text-xl font-bold text-white mb-4">How it works</h2>
+              <div className="space-y-3 text-sm text-slate-300">
+                {PIPELINE_AGENTS.map((agent, i) => (
+                  <div key={agent.type} className="flex gap-3">
+                    <span className="flex-shrink-0 text-slate-500 font-mono">{i + 1}.</span>
+                    <div>
+                      <span className="font-semibold text-slate-200">{agent.label}</span>
+                      <span className="text-slate-400"> — {agent.desc}</span>
+                    </div>
+                  </div>
+                ))}
               </div>
             </section>
           </div>

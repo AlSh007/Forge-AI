@@ -9,6 +9,8 @@ build/
 *.js
 *.js.map
 !jest.config.js
+!postcss.config.js
+!next.config.js
 
 # IDE
 .vscode/

@@ -120,10 +120,27 @@ export interface CreateExecutionInput {
   userId?: string;
 }
 
+export interface UpdateExecutionInput {
+  status?: ExecutionStatus;
+  output?: string | null;
+  error?: string | null;
+  logs?: string | null;
+}
+
 export interface CreateExecutionLogInput {
   taskId?: string | null;
   message: string;
   level?: LogLevel;
+}
+
+export interface CreatePullRequestInput {
+  taskId: string;
+  branchName: string;
+  title: string;
+  description?: string | null;
+  prUrl?: string | null;
+  changes?: string | null;
+  validationResults?: string | null;
 }
 
 interface StorageAdapter {
@@ -133,9 +150,11 @@ interface StorageAdapter {
   createTask(input: CreateTaskInput): Promise<TaskRecord>;
   updateTask(id: string, input: UpdateTaskInput): Promise<TaskRecord | null>;
   createExecution(input: CreateExecutionInput): Promise<AgentExecutionRecord>;
+  updateExecution(id: string, input: UpdateExecutionInput): Promise<AgentExecutionRecord | null>;
   listExecutionsByTaskId(taskId: string): Promise<AgentExecutionRecord[]>;
   createExecutionLog(input: CreateExecutionLogInput): Promise<ExecutionLogRecord>;
   listPullRequestsByTaskId(taskId: string): Promise<PullRequestRecord[]>;
+  createPullRequest(input: CreatePullRequestInput): Promise<PullRequestRecord>;
 }
 
 function nowIso(): string {
@@ -357,6 +376,27 @@ class MemoryStorage implements StorageAdapter {
     return execution;
   }
 
+  async updateExecution(id: string, input: UpdateExecutionInput): Promise<AgentExecutionRecord | null> {
+    for (const [taskId, executions] of this.executions.entries()) {
+      const idx = executions.findIndex((e) => e.id === id);
+      if (idx !== -1) {
+        const updated: AgentExecutionRecord = {
+          ...executions[idx],
+          status: input.status ?? executions[idx].status,
+          output: input.output === undefined ? executions[idx].output : input.output,
+          error: input.error === undefined ? executions[idx].error : input.error,
+          logs: input.logs === undefined ? executions[idx].logs : input.logs,
+          updatedAt: nowIso(),
+        };
+        executions[idx] = updated;
+        this.executions.set(taskId, executions);
+        await this.touchTask(taskId);
+        return updated;
+      }
+    }
+    return null;
+  }
+
   async listExecutionsByTaskId(taskId: string): Promise<AgentExecutionRecord[]> {
     return [...(this.executions.get(taskId) ?? [])];
   }
@@ -382,6 +422,28 @@ class MemoryStorage implements StorageAdapter {
 
   async listPullRequestsByTaskId(taskId: string): Promise<PullRequestRecord[]> {
     return [...(this.pullRequests.get(taskId) ?? [])];
+  }
+
+  async createPullRequest(input: CreatePullRequestInput): Promise<PullRequestRecord> {
+    const timestamp = nowIso();
+    const pr: PullRequestRecord = {
+      id: randomUUID(),
+      taskId: input.taskId,
+      branchName: input.branchName,
+      title: input.title,
+      description: input.description ?? null,
+      prUrl: input.prUrl ?? null,
+      changes: input.changes ?? null,
+      validationResults: input.validationResults ?? null,
+      status: PRStatus.READY,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    };
+    const taskPRs = this.pullRequests.get(input.taskId) ?? [];
+    taskPRs.push(pr);
+    this.pullRequests.set(input.taskId, taskPRs);
+    await this.touchTask(input.taskId);
+    return pr;
   }
 
   private withRelations(task: TaskRecord): TaskRecord {
@@ -523,6 +585,23 @@ class PrismaStorage implements StorageAdapter {
     return toExecutionRecord(execution);
   }
 
+  async updateExecution(id: string, input: UpdateExecutionInput): Promise<AgentExecutionRecord | null> {
+    try {
+      const execution = await this.prisma.agentExecution.update({
+        where: { id },
+        data: {
+          ...(input.status !== undefined && { status: input.status }),
+          ...(input.output !== undefined && { output: input.output }),
+          ...(input.error !== undefined && { error: input.error }),
+          ...(input.logs !== undefined && { logs: input.logs }),
+        },
+      });
+      return toExecutionRecord(execution);
+    } catch {
+      return null;
+    }
+  }
+
   async listExecutionsByTaskId(taskId: string): Promise<AgentExecutionRecord[]> {
     const executions = await this.prisma.agentExecution.findMany({
       where: { taskId },
@@ -555,6 +634,22 @@ class PrismaStorage implements StorageAdapter {
     });
 
     return pullRequests.map(toPullRequestRecord);
+  }
+
+  async createPullRequest(input: CreatePullRequestInput): Promise<PullRequestRecord> {
+    const pr = await this.prisma.pullRequest.create({
+      data: {
+        taskId: input.taskId,
+        branchName: input.branchName,
+        title: input.title,
+        description: input.description ?? null,
+        prUrl: input.prUrl ?? null,
+        changes: input.changes ?? null,
+        validationResults: input.validationResults ?? null,
+        status: PRStatus.READY,
+      },
+    });
+    return toPullRequestRecord(pr);
   }
 
   private async ensureDefaultUserId(): Promise<string> {
@@ -613,6 +708,10 @@ class ForgeStorage implements StorageAdapter {
     return (await this.getAdapter()).createExecution(input);
   }
 
+  async updateExecution(id: string, input: UpdateExecutionInput): Promise<AgentExecutionRecord | null> {
+    return (await this.getAdapter()).updateExecution(id, input);
+  }
+
   async listExecutionsByTaskId(taskId: string): Promise<AgentExecutionRecord[]> {
     return (await this.getAdapter()).listExecutionsByTaskId(taskId);
   }
@@ -623,6 +722,10 @@ class ForgeStorage implements StorageAdapter {
 
   async listPullRequestsByTaskId(taskId: string): Promise<PullRequestRecord[]> {
     return (await this.getAdapter()).listPullRequestsByTaskId(taskId);
+  }
+
+  async createPullRequest(input: CreatePullRequestInput): Promise<PullRequestRecord> {
+    return (await this.getAdapter()).createPullRequest(input);
   }
 
   async getMode(): Promise<StorageMode> {

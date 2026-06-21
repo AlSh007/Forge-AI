@@ -94,14 +94,17 @@ app.get(
 app.post(
   '/api/tasks/:id/execute',
   asyncHandler(async (req: Request, res: Response) => {
-    const task = await executeTask(req.params.id);
+    const task = await storage.getTaskById(req.params.id);
 
     if (!task) {
       res.status(404).json({ error: 'Task not found.' });
       return;
     }
 
-    res.json({ task });
+    // Fire and forget — agents run in the background; client polls for progress
+    void executeTask(req.params.id);
+
+    res.status(202).json({ task });
   })
 );
 

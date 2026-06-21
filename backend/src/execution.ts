@@ -1,11 +1,13 @@
 import {
   AgentCoordinator,
-  AgentStepResult,
   AgentType as CoordinatorAgentType,
   ExecutionContext,
+  ProgressCallback,
+  RepoContext,
   TaskExecutionResult,
 } from 'forgeai-agent-core';
 import { AgentType, ExecutionStatus, LogLevel, TaskStatus, storage, TaskRecord } from './storage';
+import { createGitHubService } from './github';
 
 const coordinator = new AgentCoordinator();
 
@@ -18,7 +20,7 @@ const agentTypeMap: Record<CoordinatorAgentType, AgentType> = {
   [CoordinatorAgentType.DEVOPS]: AgentType.DEVOPS,
 };
 
-function createExecutionContext(task: TaskRecord): ExecutionContext {
+function createExecutionContext(task: TaskRecord, repoContext?: RepoContext): ExecutionContext {
   return {
     taskId: task.id,
     repository: task.repositoryUrl,
@@ -26,86 +28,194 @@ function createExecutionContext(task: TaskRecord): ExecutionContext {
     userId: task.userId,
     environment: {
       nodeVersion: process.version,
-      framework: 'repository-driven',
+      framework: repoContext?.framework,
     },
+    repoContext,
   };
 }
 
-async function persistStep(task: TaskRecord, prompt: string, step: AgentStepResult): Promise<void> {
-  const status = step.error ? ExecutionStatus.FAILED : ExecutionStatus.SUCCESS;
-  const message = step.error
-    ? `${step.agentName} failed: ${step.error}`
-    : `${step.agentName} completed successfully.`;
+function makeProgressCallback(task: TaskRecord): {
+  callback: ProgressCallback;
+  getExecutionId: (agentName: string) => string | undefined;
+} {
+  const executionIds = new Map<string, string>();
 
-  await storage.createExecution({
-    taskId: task.id,
-    userId: task.userId,
-    agentType: agentTypeMap[step.agentType],
-    status,
-    input: prompt,
-    output: step.output ?? null,
-    error: step.error ?? null,
-    logs: message,
-  });
+  const callback: ProgressCallback = async (event) => {
+    if (event.status === 'started') {
+      const exec = await storage.createExecution({
+        taskId: task.id,
+        userId: task.userId,
+        agentType: agentTypeMap[event.agentType],
+        status: ExecutionStatus.RUNNING,
+      });
+      executionIds.set(event.agentName, exec.id);
+      await storage.createExecutionLog({
+        taskId: task.id,
+        message: `${event.agentName} started.`,
+        level: LogLevel.INFO,
+      });
+    } else {
+      const execId = executionIds.get(event.agentName);
+      if (execId) {
+        await storage.updateExecution(execId, {
+          status: event.status === 'completed' ? ExecutionStatus.SUCCESS : ExecutionStatus.FAILED,
+          output: event.output ?? null,
+          error: event.error ?? null,
+          logs: event.status === 'completed'
+            ? `${event.agentName} completed successfully.`
+            : `${event.agentName} failed: ${event.error ?? 'Unknown error'}`,
+        });
+      }
+      await storage.createExecutionLog({
+        taskId: task.id,
+        message: event.status === 'completed'
+          ? `${event.agentName} completed successfully.`
+          : `${event.agentName} failed: ${event.error ?? 'Unknown error'}`,
+        level: event.status === 'completed' ? LogLevel.INFO : LogLevel.ERROR,
+      });
+    }
+  };
 
-  await storage.createExecutionLog({
-    taskId: task.id,
-    message,
-    level: step.error ? LogLevel.ERROR : LogLevel.INFO,
-  });
+  return { callback, getExecutionId: (name) => executionIds.get(name) };
 }
 
-async function persistExecutionResult(
-  task: TaskRecord,
-  result: TaskExecutionResult
-): Promise<TaskRecord | null> {
-  for (const step of result.steps) {
-    await persistStep(task, task.prompt, step);
-  }
-
+async function finalizeTask(task: TaskRecord, result: TaskExecutionResult): Promise<TaskRecord | null> {
   const nextStatus = result.success ? TaskStatus.COMPLETED : TaskStatus.FAILED;
-  const plan = result.plan ?? task.plan;
   await storage.updateTask(task.id, {
     status: nextStatus,
-    plan,
+    plan: result.plan ?? task.plan,
   });
-
   await storage.createExecutionLog({
     taskId: task.id,
     message: result.success
-      ? 'Task execution finished successfully.'
-      : `Task execution failed: ${result.error ?? 'Unknown error'}`,
+      ? 'Task completed successfully.'
+      : `Task failed: ${result.error ?? 'Unknown error'}`,
     level: result.success ? LogLevel.INFO : LogLevel.ERROR,
   });
-
   return storage.getTaskById(task.id);
+}
+
+async function createPRFromResult(task: TaskRecord, result: TaskExecutionResult): Promise<void> {
+  const github = createGitHubService();
+  if (!github) {
+    await storage.createExecutionLog({
+      taskId: task.id,
+      message: 'GITHUB_TOKEN not set — skipping PR creation.',
+      level: LogLevel.WARN,
+    });
+    return;
+  }
+
+  const codeChanges = result.codeChanges ?? [];
+  if (codeChanges.length === 0) {
+    await storage.createExecutionLog({
+      taskId: task.id,
+      message: 'No file changes generated — skipping PR creation.',
+      level: LogLevel.INFO,
+    });
+    return;
+  }
+
+  const branchName = `forge/${task.id}`;
+  const title = task.prompt.slice(0, 72);
+  const prBody = [
+    '## Summary',
+    result.plan ?? task.prompt,
+    '',
+    '## Validation',
+    result.validation ?? 'N/A',
+    '',
+    `---`,
+    `*Generated by ForgeAI — task \`${task.id}\`*`,
+  ].join('\n');
+
+  try {
+    await github.createBranch(task.repositoryUrl, branchName);
+    await storage.createExecutionLog({
+      taskId: task.id,
+      message: `Branch \`${branchName}\` created.`,
+      level: LogLevel.INFO,
+    });
+
+    await github.commitFiles(task.repositoryUrl, branchName, codeChanges, `forge: ${title}`);
+    await storage.createExecutionLog({
+      taskId: task.id,
+      message: `Committed ${codeChanges.length} file(s) to \`${branchName}\`.`,
+      level: LogLevel.INFO,
+    });
+
+    const pr = await github.createPullRequest(task.repositoryUrl, branchName, title, prBody);
+
+    await storage.createPullRequest({
+      taskId: task.id,
+      branchName,
+      title,
+      prUrl: pr.url,
+      description: result.plan ?? null,
+      validationResults: result.validation ?? null,
+      changes: codeChanges.map((f) => f.path).join('\n'),
+    });
+
+    await storage.createExecutionLog({
+      taskId: task.id,
+      message: `Pull request created: ${pr.url}`,
+      level: LogLevel.INFO,
+    });
+  } catch (err) {
+    await storage.createExecutionLog({
+      taskId: task.id,
+      message: `PR creation failed: ${err instanceof Error ? err.message : 'unknown error'}`,
+      level: LogLevel.ERROR,
+    });
+  }
 }
 
 export async function executeTask(taskId: string): Promise<TaskRecord | null> {
   const task = await storage.getTaskById(taskId);
-  if (!task) {
-    return null;
-  }
+  if (!task) return null;
 
-  await storage.updateTask(task.id, {
-    status: TaskStatus.PLANNING,
-  });
-
+  await storage.updateTask(task.id, { status: TaskStatus.PLANNING });
   await storage.createExecutionLog({
     taskId: task.id,
     message: 'Task execution started.',
     level: LogLevel.INFO,
   });
 
-  const executionContext = createExecutionContext(task);
-  const result = await coordinator.executeTask(task.prompt, executionContext);
-
-  if (result.success) {
-    await storage.updateTask(task.id, {
-      status: TaskStatus.IN_PROGRESS,
-      plan: result.plan ?? task.plan,
-    });
+  let repoContext: RepoContext | undefined;
+  const github = createGitHubService();
+  if (github) {
+    try {
+      await storage.createExecutionLog({
+        taskId: task.id,
+        message: `Fetching repository context for ${task.repositoryUrl}…`,
+        level: LogLevel.INFO,
+      });
+      repoContext = await github.fetchRepoContext(task.repositoryUrl);
+      await storage.createExecutionLog({
+        taskId: task.id,
+        message: `Repository context loaded (${Object.keys(repoContext.keyFiles).length} key files).`,
+        level: LogLevel.INFO,
+      });
+    } catch (err) {
+      await storage.createExecutionLog({
+        taskId: task.id,
+        message: `Could not fetch repo context: ${err instanceof Error ? err.message : 'unknown'}. Proceeding without it.`,
+        level: LogLevel.WARN,
+      });
+    }
   }
 
-  return persistExecutionResult(task, result);
+  await storage.updateTask(task.id, { status: TaskStatus.IN_PROGRESS });
+
+  const executionContext = createExecutionContext(task, repoContext);
+  const { callback: onProgress } = makeProgressCallback(task);
+
+  const result = await coordinator.executeTask(task.prompt, executionContext, onProgress);
+
+  if (result.success) {
+    await storage.updateTask(task.id, { status: TaskStatus.VALIDATING });
+    await createPRFromResult(task, result);
+  }
+
+  return finalizeTask(task, result);
 }

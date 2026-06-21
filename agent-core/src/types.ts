@@ -1,4 +1,3 @@
-// Base Agent interface
 export interface Agent {
   name: string;
   type: AgentType;
@@ -14,14 +13,12 @@ export enum AgentType {
   DEVOPS = 'devops',
 }
 
-// Tool interface for agents to use
 export interface Tool {
   name: string;
   description: string;
   execute(input: unknown): Promise<unknown>;
 }
 
-// Agent execution result
 export interface AgentResult {
   success: boolean;
   output: string;
@@ -36,6 +33,11 @@ export interface AgentStepResult {
   error?: string;
 }
 
+export interface CodeChange {
+  path: string;
+  content: string;
+}
+
 export interface TaskExecutionResult {
   success: boolean;
   steps: AgentStepResult[];
@@ -45,10 +47,17 @@ export interface TaskExecutionResult {
   backendCode?: string;
   frontendCode?: string;
   validation?: string;
+  codeChanges?: CodeChange[];
   error?: string;
 }
 
-// Task execution context
+export interface RepoContext {
+  structure: string;
+  keyFiles: Record<string, string>;
+  framework?: string;
+  dependencies?: string[];
+}
+
 export interface ExecutionContext {
   taskId: string;
   repository: string;
@@ -59,4 +68,15 @@ export interface ExecutionContext {
     pythonVersion?: string;
     framework?: string;
   };
+  repoContext?: RepoContext;
 }
+
+export type AgentProgressEvent = {
+  agentType: AgentType;
+  agentName: string;
+  status: 'started' | 'completed' | 'failed';
+  output?: string;
+  error?: string;
+};
+
+export type ProgressCallback = (event: AgentProgressEvent) => void | Promise<void>;
