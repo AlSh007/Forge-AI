@@ -1,61 +1,123 @@
-# ForgeAI – Autonomous Software Engineering Agents
+# ForgeAI
 
-A platform for autonomous AI coding agents that can handle full-stack development tasks: analyze codebases, generate code, validate through tests, and create pull requests automatically.
+Autonomous AI coding agent platform. Submit a development task and a GitHub repo URL; ForgeAI orchestrates 6 specialized agents (Product Manager → Architect → Database → Backend → Frontend → DevOps) to produce a structured plan, generated code, and optionally a pull request — all visible in real time through a live pipeline dashboard.
 
-## Project Structure
+## What works today
 
-```
-forgeai/
-├── backend/          # Node.js API server & agent orchestration
-├── frontend/         # Next.js dashboard UI
-├── agent-core/       # Agent framework & logic
-├── docs/             # Documentation & architecture
-└── package.json      # Monorepo workspace configuration
-```
+- **Live agent pipeline** — 6 agents run sequentially; the dashboard polls every 2s and shows each agent's status (pending / running / done / failed) as it changes
+- **Real code generation** — Backend and Frontend agents return `{"files": [...]}` JSON with complete file contents; Database agent returns SQL migrations
+- **Fire-and-forget execution** — `POST /api/tasks/:id/execute` returns 202 immediately; agents run in the background
+- **Optional PR creation** — if `GITHUB_TOKEN` is set, creates a branch, commits all generated files, and opens a PR
+- **No database required** — runs entirely in-memory by default; PostgreSQL is optional via `DATABASE_URL`
 
-## Tech Stack
+## Stack
 
-- **Frontend:** Next.js, React, TailwindCSS
-- **Backend:** Node.js, TypeScript, Express
-- **Agents:** LangGraph / OpenAI Agents SDK
-- **Database:** PostgreSQL
-- **Sandbox:** Docker
-- **LLM:** OpenAI / Anthropic APIs
+| Layer | Technology |
+|---|---|
+| Frontend | Next.js 14, React, Tailwind CSS v3 |
+| Backend | Express.js, TypeScript, Prisma (optional) |
+| Agent core | Custom `AgentCoordinator` + 6 agent classes |
+| LLM | Groq (`llama-3.3-70b-versatile`) via axios |
+| Monorepo | npm workspaces (`backend/`, `frontend/`, `agent-core/`) |
 
-## Getting Started
+## Setup
 
-### Prerequisites
-
-- Node.js 18+ with npm 7+
-- Docker
-- PostgreSQL
-
-### Installation
+**Prerequisites**: Node.js 18+. No Docker or database needed for local development.
 
 ```bash
-# Install dependencies for all workspaces
 npm install
-
-# Set up environment variables
-cp .env.example .env.local
-
-# Run development servers
-npm run dev
 ```
 
-## Development Phases
+Create `backend/.env`:
 
-- [ ] Phase 1: Foundation & Core Infrastructure
-- [ ] Phase 2: Agent Framework & Core Logic
-- [ ] Phase 3: Task Execution Pipeline
-- [ ] Phase 4: Frontend & User Interface
-- [ ] Phase 5: Security & Hardening
-- [ ] Phase 6: Testing & Deployment
-- [ ] Phase 7: MVP Launch & Iteration
+```
+GROQ_API_KEY=your_key_from_console.groq.com
+# GITHUB_TOKEN=optional — enables branch + PR creation
+# DATABASE_URL=optional — PostgreSQL; omit to use in-memory storage
+```
 
-## Contributing
+Create `frontend/.env.local`:
 
-This project is under active development. Check `/docs` for detailed architecture and roadmap.
+```
+NEXT_PUBLIC_API_URL=http://localhost:4000
+```
+
+```bash
+npm run dev   # builds agent-core, then starts backend :4000 + frontend :3000
+```
+
+## Agent pipeline
+
+Agents run sequentially. Each receives all prior agents' outputs as context.
+
+| # | Agent | Output |
+|---|---|---|
+| 1 | Product Manager | Execution plan (plain text) |
+| 2 | Architect | Technical design (plain text) |
+| 3 | Database | Schema/migration files (`{"files": [...]}`) |
+| 4 | Backend | Server-side code (`{"files": [...]}`) |
+| 5 | Frontend | UI components (`{"files": [...]}`) |
+| 6 | DevOps | Validation report + PASS/FAIL verdict (plain text) |
+
+## API
+
+```
+GET  /health                         System status and storage mode
+GET  /api/tasks                      List all tasks
+POST /api/tasks                      Create a task { prompt, repositoryUrl }
+GET  /api/tasks/:id                  Get task with executions + logs
+POST /api/tasks/:id/execute          Start execution (returns 202 immediately)
+GET  /api/executions?taskId=:id      List agent execution records
+GET  /api/pull-requests?taskId=:id   List PRs created for a task
+```
+
+## Project structure
+
+```
+Forge-AI/
+├── agent-core/src/
+│   ├── index.ts          AgentCoordinator — sequences agents, threads context
+│   ├── agents/base.ts    6 agent classes with specialized system prompts
+│   ├── llm/client.ts     Groq client (axios, retry/backoff on 429)
+│   └── types.ts          Shared types: ExecutionContext, CodeChange, RepoContext
+├── backend/src/
+│   ├── index.ts          Express server + all API routes
+│   ├── execution.ts      Task orchestration, real-time storage writes per agent
+│   ├── storage.ts        Dual adapter: Prisma if DATABASE_URL set, else in-memory
+│   └── github.ts         GitHub API: repo context fetch, branch, commit, PR
+└── frontend/
+    ├── pages/index.tsx        Dashboard: task form + live pipeline + recent tasks
+    ├── components/
+    │   ├── AgentPipeline.tsx  Live pipeline with animated rail + scan beam
+    │   └── TaskForm.tsx       Command-panel style submission form
+    └── lib/
+        ├── api.ts             Axios client + typed API functions
+        └── store.ts           Zustand store for task state
+```
+
+## Configuration
+
+| Variable | Location | Required | Description |
+|---|---|---|---|
+| `GROQ_API_KEY` | `backend/.env` | Yes | From console.groq.com |
+| `GITHUB_TOKEN` | `backend/.env` | No | Enables branch + PR creation |
+| `DATABASE_URL` | `backend/.env` | No | PostgreSQL; omit for in-memory |
+| `PORT` | `backend/.env` | No | Defaults to 4000 |
+| `NEXT_PUBLIC_API_URL` | `frontend/.env.local` | No | Defaults to `http://localhost:4000` |
+
+## Commands
+
+```bash
+npm run dev              # Start all (builds agent-core first)
+npm run build            # Build all workspaces
+npm run dev -w backend   # Backend only (requires agent-core built)
+npm run dev -w frontend  # Frontend only
+npm run dev -w agent-core # TypeScript watch mode
+
+npm run migrate -w backend       # Run Prisma migrations
+npm run db:push -w backend       # Sync schema without migration
+npm run prisma:studio -w backend # Prisma GUI
+```
 
 ## License
 

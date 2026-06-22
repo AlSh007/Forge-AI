@@ -119,6 +119,11 @@ export const executionApi = {
     (await apiClient.post(`/api/tasks/${taskId}/execute`)).data,
 };
 
+export const systemApi = {
+  health: async (): Promise<{ status: string; storage: string }> =>
+    (await apiClient.get('/health')).data,
+};
+
 // PullRequest API calls
 export const prApi = {
   getByTaskId: async (taskId: string): Promise<PullRequestListResponse> =>
