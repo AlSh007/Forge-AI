@@ -14,8 +14,15 @@ const PORT = Number(process.env.PORT || 4000);
 app.use(cors());
 app.use(express.json());
 
+const PROMPT_MAX_LENGTH = 2000;
+const GITHUB_URL_RE = /^https?:\/\/github\.com\/[^/]+\/[^/]+(\.git)?$/i;
+
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === 'string' && value.trim().length > 0;
+}
+
+function isValidGitHubUrl(value: string): boolean {
+  return GITHUB_URL_RE.test(value.trim());
 }
 
 function asyncHandler(
@@ -53,9 +60,17 @@ app.post(
     const repositoryUrl = req.body.repositoryUrl ?? req.body.repository;
 
     if (!isNonEmptyString(prompt) || !isNonEmptyString(repositoryUrl)) {
-      res.status(400).json({
-        error: 'Both prompt and repositoryUrl are required.',
-      });
+      res.status(400).json({ error: 'Both prompt and repositoryUrl are required.' });
+      return;
+    }
+
+    if (prompt.trim().length > PROMPT_MAX_LENGTH) {
+      res.status(400).json({ error: `prompt must be ${PROMPT_MAX_LENGTH} characters or fewer.` });
+      return;
+    }
+
+    if (!isValidGitHubUrl(repositoryUrl)) {
+      res.status(400).json({ error: 'repositoryUrl must be a valid GitHub repository URL (e.g. https://github.com/owner/repo).' });
       return;
     }
 
@@ -98,6 +113,17 @@ app.post(
 
     if (!task) {
       res.status(404).json({ error: 'Task not found.' });
+      return;
+    }
+
+    const activeStatuses = ['PLANNING', 'IN_PROGRESS', 'VALIDATING'];
+    if (activeStatuses.includes(task.status)) {
+      res.status(409).json({ error: `Task is already executing (status: ${task.status}).` });
+      return;
+    }
+
+    if (task.status === 'COMPLETED') {
+      res.status(409).json({ error: 'Task has already completed. Create a new task to run again.' });
       return;
     }
 
