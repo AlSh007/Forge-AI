@@ -38,6 +38,18 @@ export interface CodeChange {
   content: string;
 }
 
+export interface ValidationIssue {
+  path: string;
+  severity: 'error' | 'warning';
+  message: string;
+}
+
+export interface StaticValidationResult {
+  ok: boolean;
+  issues: ValidationIssue[];
+  filesChecked: number;
+}
+
 export interface TaskExecutionResult {
   success: boolean;
   steps: AgentStepResult[];
@@ -49,6 +61,7 @@ export interface TaskExecutionResult {
   validation?: string;
   validationPassed?: boolean;
   validationReason?: string;
+  staticValidation?: StaticValidationResult;
   codeChanges?: CodeChange[];
   error?: string;
 }
