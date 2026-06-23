@@ -73,6 +73,20 @@ export interface RepoContext {
   dependencies?: string[];
 }
 
+/**
+ * On-demand access to the target repository, injected by the host (the backend
+ * implements it over the GitHub API). Lets agents read files that weren't in the
+ * pre-fetched snapshot instead of generating code against truncated context.
+ */
+export interface RepoAccess {
+  /** Returns file contents, or null if the path does not exist. */
+  readFile(path: string): Promise<string | null>;
+  /** All file paths in the repository. */
+  listFiles(): Promise<string[]>;
+  /** File paths whose path contains the (case-insensitive) query substring. */
+  searchFiles(query: string): Promise<string[]>;
+}
+
 export interface ExecutionContext {
   taskId: string;
   repository: string;
@@ -84,6 +98,7 @@ export interface ExecutionContext {
     framework?: string;
   };
   repoContext?: RepoContext;
+  repoAccess?: RepoAccess;
 }
 
 export type AgentProgressEvent = {

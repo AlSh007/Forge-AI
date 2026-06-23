@@ -1,5 +1,6 @@
 import { Agent, AgentType, ExecutionContext } from '../types';
-import { callLLM } from '../llm/client';
+import { callLLM, callLLMWithTools } from '../llm/client';
+import { REPO_TOOLS, makeRepoDispatcher } from '../llm/tools';
 
 export abstract class BaseAgent implements Agent {
   name: string;
@@ -14,6 +15,27 @@ export abstract class BaseAgent implements Agent {
 
   protected log(message: string): void {
     console.log(`[${this.name}] ${message}`);
+  }
+
+  /**
+   * Generate a response. When the host provides repo access, the agent can call
+   * read_file / list_files / search_files to ground its output in the real
+   * codebase; otherwise it falls back to a single-shot completion.
+   */
+  protected async generate(
+    systemPrompt: string,
+    input: string,
+    context: ExecutionContext,
+    maxTokens?: number
+  ): Promise<string> {
+    if (context.repoAccess) {
+      return callLLMWithTools(systemPrompt, input, {
+        tools: REPO_TOOLS,
+        dispatch: makeRepoDispatcher(context.repoAccess),
+        ...(maxTokens ? { maxTokens } : {}),
+      });
+    }
+    return maxTokens ? callLLM(systemPrompt, input, undefined, maxTokens) : callLLM(systemPrompt, input);
   }
 }
 
@@ -65,6 +87,11 @@ export class ArchitectAgent extends BaseAgent {
   }
 }
 
+// Shared instruction for the code-generating agents. When repo tools are
+// available the model should ground itself in the real files before writing;
+// the tool calls happen first and only the final message is the required JSON.
+const TOOL_HINT = `\n\nYou may have tools to inspect the repository: read_file, list_files, and search_files. Before writing code, read the actual files you intend to modify and any closely related modules so your changes match what already exists. Make all tool calls first; your final message must be the JSON described above and nothing else.`;
+
 // ─── Database ─────────────────────────────────────────────────────────────────
 
 const DATABASE_SYSTEM = `You are an expert database engineer. Given a development task, execution plan, and architecture design, determine the required database/schema changes.
@@ -75,7 +102,7 @@ If schema changes are needed, respond with JSON in this exact format:
 If no schema changes are needed, respond with:
 {"files": [], "description": "No schema changes required"}
 
-Output raw JSON only — no markdown, no code fences.`;
+Output raw JSON only — no markdown, no code fences.${TOOL_HINT}`;
 
 export class DatabaseAgent extends BaseAgent {
   constructor() {
@@ -84,7 +111,7 @@ export class DatabaseAgent extends BaseAgent {
 
   async run(input: string, context: ExecutionContext): Promise<string> {
     this.log(`Planning schema changes for ${context.repository}`);
-    return callLLM(DATABASE_SYSTEM, input);
+    return this.generate(DATABASE_SYSTEM, input, context);
   }
 }
 
@@ -100,7 +127,7 @@ Rules:
 - Write complete file contents (not diffs or snippets)
 - Match the existing code style, language, and framework shown in the codebase
 - Do not add files outside the repository structure shown
-- Output raw JSON only — no markdown, no code fences`;
+- Output raw JSON only — no markdown, no code fences${TOOL_HINT}`;
 
 export class BackendAgent extends BaseAgent {
   constructor() {
@@ -109,7 +136,7 @@ export class BackendAgent extends BaseAgent {
 
   async run(input: string, context: ExecutionContext): Promise<string> {
     this.log(`Generating backend code for ${context.repository}`);
-    return callLLM(BACKEND_SYSTEM, input, undefined, 8192);
+    return this.generate(BACKEND_SYSTEM, input, context, 8192);
   }
 }
 
@@ -125,7 +152,7 @@ Rules:
 - Write complete file contents (not diffs or snippets)
 - Match the existing framework, styling approach, and code patterns shown
 - If no frontend changes are required, respond with: {"files": [], "description": "No frontend changes required"}
-- Output raw JSON only — no markdown, no code fences`;
+- Output raw JSON only — no markdown, no code fences${TOOL_HINT}`;
 
 export class FrontendAgent extends BaseAgent {
   constructor() {
@@ -134,7 +161,7 @@ export class FrontendAgent extends BaseAgent {
 
   async run(input: string, context: ExecutionContext): Promise<string> {
     this.log(`Generating frontend code for ${context.repository}`);
-    return callLLM(FRONTEND_SYSTEM, input, undefined, 8192);
+    return this.generate(FRONTEND_SYSTEM, input, context, 8192);
   }
 }
 

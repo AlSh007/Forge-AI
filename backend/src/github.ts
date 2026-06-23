@@ -118,6 +118,32 @@ export class GitHubService {
     return { structure, keyFiles, framework, dependencies };
   }
 
+  /** Fetch a single file's contents on demand. Returns null if it doesn't exist. */
+  async readFile(repositoryUrl: string, path: string): Promise<string | null> {
+    const { owner, repo } = parseRepoUrl(repositoryUrl);
+    try {
+      const data = await ghFetch<{ content?: string; encoding?: string }>(
+        `/repos/${owner}/${repo}/contents/${path}`,
+        this.headers
+      );
+      if (!data.content) return null;
+      return Buffer.from(data.content, 'base64').toString('utf-8');
+    } catch (err) {
+      if ((err as { status?: number }).status === 404) return null;
+      throw err;
+    }
+  }
+
+  /** List every file path in the repository (blobs only). */
+  async listFiles(repositoryUrl: string): Promise<string[]> {
+    const { owner, repo } = parseRepoUrl(repositoryUrl);
+    const tree = await ghFetch<{ tree: Array<{ path: string; type: string }> }>(
+      `/repos/${owner}/${repo}/git/trees/HEAD?recursive=1`,
+      this.headers
+    );
+    return tree.tree.filter((f) => f.type === 'blob').map((f) => f.path);
+  }
+
   async getDefaultBranch(repositoryUrl: string): Promise<string> {
     const { owner, repo } = parseRepoUrl(repositoryUrl);
     const data = await ghFetch<{ default_branch: string }>(

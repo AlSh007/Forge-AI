@@ -4,11 +4,12 @@ import {
   ExecutionContext,
   formatStaticResults,
   ProgressCallback,
+  RepoAccess,
   RepoContext,
   TaskExecutionResult,
 } from 'forgeai-agent-core';
 import { AgentType, ExecutionStatus, LogLevel, TaskStatus, storage, TaskRecord } from './storage';
-import { createGitHubService } from './github';
+import { createGitHubService, GitHubService } from './github';
 
 const coordinator = new AgentCoordinator();
 
@@ -21,7 +22,42 @@ const agentTypeMap: Record<CoordinatorAgentType, AgentType> = {
   [CoordinatorAgentType.DEVOPS]: AgentType.DEVOPS,
 };
 
-function createExecutionContext(task: TaskRecord, repoContext?: RepoContext): ExecutionContext {
+/**
+ * GitHub-backed repo access for agent tools. Serves files already in the fetched
+ * snapshot and lists/searches over the cached file tree to avoid extra API calls;
+ * only an uncached read_file hits the network.
+ */
+function createRepoAccess(
+  github: GitHubService,
+  repositoryUrl: string,
+  repoContext?: RepoContext
+): RepoAccess {
+  const cachedPaths = repoContext?.structure
+    ? repoContext.structure.split('\n').map((p) => p.trim()).filter(Boolean)
+    : [];
+
+  return {
+    async readFile(path: string): Promise<string | null> {
+      const cached = repoContext?.keyFiles?.[path];
+      if (cached != null) return cached;
+      return github.readFile(repositoryUrl, path);
+    },
+    async listFiles(): Promise<string[]> {
+      return cachedPaths.length > 0 ? cachedPaths : github.listFiles(repositoryUrl);
+    },
+    async searchFiles(query: string): Promise<string[]> {
+      const paths = cachedPaths.length > 0 ? cachedPaths : await github.listFiles(repositoryUrl);
+      const needle = query.toLowerCase();
+      return paths.filter((p) => p.toLowerCase().includes(needle));
+    },
+  };
+}
+
+function createExecutionContext(
+  task: TaskRecord,
+  repoContext?: RepoContext,
+  repoAccess?: RepoAccess
+): ExecutionContext {
   return {
     taskId: task.id,
     repository: task.repositoryUrl,
@@ -32,6 +68,7 @@ function createExecutionContext(task: TaskRecord, repoContext?: RepoContext): Ex
       framework: repoContext?.framework,
     },
     repoContext,
+    repoAccess,
   };
 }
 
@@ -208,7 +245,16 @@ export async function executeTask(taskId: string): Promise<TaskRecord | null> {
 
   await storage.updateTask(task.id, { status: TaskStatus.IN_PROGRESS });
 
-  const executionContext = createExecutionContext(task, repoContext);
+  const repoAccess = github ? createRepoAccess(github, task.repositoryUrl, repoContext) : undefined;
+  if (repoAccess) {
+    await storage.createExecutionLog({
+      taskId: task.id,
+      message: 'Repo tools enabled — agents can read files on demand.',
+      level: LogLevel.INFO,
+    });
+  }
+
+  const executionContext = createExecutionContext(task, repoContext, repoAccess);
   const { callback: onProgress } = makeProgressCallback(task);
 
   const result = await coordinator.executeTask(task.prompt, executionContext, onProgress);
