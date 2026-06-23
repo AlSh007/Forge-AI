@@ -105,6 +105,8 @@ export type AgentProgressEvent = {
   agentType: AgentType;
   agentName: string;
   status: 'started' | 'completed' | 'failed';
+  /** The full prompt the agent received. Present on the 'started' event. */
+  input?: string;
   output?: string;
   error?: string;
 };
