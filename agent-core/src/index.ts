@@ -193,7 +193,7 @@ export class AgentCoordinator {
     steps: AgentStepResult[],
     onProgress?: ProgressCallback
   ): Promise<string> {
-    await onProgress?.({ agentType: agent.type, agentName: agent.name, status: 'started' });
+    await onProgress?.({ agentType: agent.type, agentName: agent.name, status: 'started', input });
     try {
       const output = await agent.run(input, context);
       steps.push({ agentType: agent.type, agentName: agent.name, output });

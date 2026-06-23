@@ -85,6 +85,7 @@ function makeProgressCallback(task: TaskRecord): {
         userId: task.userId,
         agentType: agentTypeMap[event.agentType],
         status: ExecutionStatus.RUNNING,
+        input: event.input ?? null,
       });
       executionIds.set(event.agentName, exec.id);
       await storage.createExecutionLog({
