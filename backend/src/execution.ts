@@ -2,6 +2,7 @@ import {
   AgentCoordinator,
   AgentType as CoordinatorAgentType,
   ExecutionContext,
+  formatStaticResults,
   ProgressCallback,
   RepoContext,
   TaskExecutionResult,
@@ -214,6 +215,14 @@ export async function executeTask(taskId: string): Promise<TaskRecord | null> {
 
   if (result.success) {
     await storage.updateTask(task.id, { status: TaskStatus.VALIDATING });
+
+    if (result.staticValidation) {
+      await storage.createExecutionLog({
+        taskId: task.id,
+        message: formatStaticResults(result.staticValidation),
+        level: result.staticValidation.ok ? LogLevel.INFO : LogLevel.ERROR,
+      });
+    }
 
     if (result.validationPassed) {
       await createPRFromResult(task, result);

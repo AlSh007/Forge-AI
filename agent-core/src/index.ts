@@ -7,6 +7,7 @@ import {
   DatabaseAgent,
   DevOpsAgent,
 } from './agents/base';
+import { validateChanges, formatStaticResults } from './validation/static';
 
 // Keep accumulated context below this to avoid token-per-minute rate limits
 const MAX_CONTEXT_CHARS = 12_000;
@@ -129,22 +130,33 @@ export class AgentCoordinator {
         onProgress
       );
 
-      const validation = await this.runStep(
-        this.agents.devops,
-        truncate(`${baseInput}\n\n## Execution Plan\n${plan}\n\n## Architecture Design\n${design}\n\n## Database Changes\n${dbChanges}\n\n## Backend Changes\n${backendCode}\n\n## Frontend Changes\n${frontendCode}`),
-        context,
-        steps,
-        onProgress
-      );
-
+      // Collect generated files and statically validate them before the DevOps
+      // review, so the reviewer reasons over real, deterministic findings.
       const codeChanges = [
         ...parseCodeChanges(dbChanges),
         ...parseCodeChanges(backendCode),
         ...parseCodeChanges(frontendCode),
       ];
+      const staticValidation = validateChanges(codeChanges);
+      const staticSection = formatStaticResults(staticValidation);
 
+      const validation = await this.runStep(
+        this.agents.devops,
+        truncate(`${baseInput}\n\n## Execution Plan\n${plan}\n\n## Architecture Design\n${design}\n\n## Database Changes\n${dbChanges}\n\n## Backend Changes\n${backendCode}\n\n## Frontend Changes\n${frontendCode}\n\n## Static Validation Results (deterministic, authoritative)\n${staticSection}`),
+        context,
+        steps,
+        onProgress
+      );
+
+      // The change ships only if BOTH the deterministic checks pass and the
+      // reviewer signs off. Static failures override a PASS verdict.
       const verdict = parseVerdict(validation);
-      console.log(`\nTask execution completed — DevOps verdict: ${verdict.passed ? 'PASS' : 'FAIL'} (${verdict.reason})`);
+      const validationPassed = staticValidation.ok && verdict.passed;
+      const validationReason = !staticValidation.ok
+        ? `Static validation failed: ${staticValidation.issues.filter((i) => i.severity === 'error').length} error(s). ${verdict.reason}`
+        : verdict.reason;
+
+      console.log(`\nTask execution completed — static: ${staticValidation.ok ? 'OK' : 'FAIL'}, DevOps verdict: ${verdict.passed ? 'PASS' : 'FAIL'} (${validationReason})`);
 
       return {
         success: true,
@@ -155,8 +167,9 @@ export class AgentCoordinator {
         backendCode,
         frontendCode,
         validation,
-        validationPassed: verdict.passed,
-        validationReason: verdict.reason,
+        validationPassed,
+        validationReason,
+        staticValidation,
         codeChanges,
       };
     } catch (error) {
@@ -196,3 +209,4 @@ export class AgentCoordinator {
 }
 
 export * from './types';
+export { validateChanges, formatStaticResults } from './validation/static';
