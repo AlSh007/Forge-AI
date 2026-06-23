@@ -147,9 +147,13 @@ Your review must cover:
 2. Security — any injection risks, exposed secrets, missing auth checks?
 3. Breaking changes — will this break existing functionality?
 4. Missing pieces — anything the task required but not implemented?
-5. Overall verdict: PASS or FAIL, with a one-line reason
 
-Output plain text only.`;
+Then, on the FINAL line and nowhere else, emit a machine-readable verdict in exactly this format:
+VERDICT: PASS — <one-line reason>
+or
+VERDICT: FAIL — <one-line reason>
+
+Use FAIL if the changes have correctness bugs, security issues, or are missing required functionality. Output plain text only.`;
 
 export class DevOpsAgent extends BaseAgent {
   constructor() {

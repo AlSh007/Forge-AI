@@ -214,7 +214,16 @@ export async function executeTask(taskId: string): Promise<TaskRecord | null> {
 
   if (result.success) {
     await storage.updateTask(task.id, { status: TaskStatus.VALIDATING });
-    await createPRFromResult(task, result);
+
+    if (result.validationPassed) {
+      await createPRFromResult(task, result);
+    } else {
+      await storage.createExecutionLog({
+        taskId: task.id,
+        message: `DevOps validation did not pass — skipping PR creation. Reason: ${result.validationReason ?? 'unknown'}`,
+        level: LogLevel.WARN,
+      });
+    }
   }
 
   return finalizeTask(task, result);

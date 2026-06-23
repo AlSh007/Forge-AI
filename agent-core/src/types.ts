@@ -47,6 +47,8 @@ export interface TaskExecutionResult {
   backendCode?: string;
   frontendCode?: string;
   validation?: string;
+  validationPassed?: boolean;
+  validationReason?: string;
   codeChanges?: CodeChange[];
   error?: string;
 }
