@@ -16,6 +16,24 @@ function truncate(text: string, maxChars = MAX_CONTEXT_CHARS): string {
   return text.slice(0, maxChars) + '\n... [truncated]';
 }
 
+/**
+ * Extracts the DevOps verdict from its review output. Looks for the
+ * machine-readable `VERDICT: PASS|FAIL — reason` line the agent is instructed
+ * to emit. If no verdict can be parsed, the change is treated as NOT passing —
+ * a validation gate should fail closed, not open.
+ */
+function parseVerdict(validation: string): { passed: boolean; reason: string } {
+  const matches = [...validation.matchAll(/VERDICT:\s*(PASS|FAIL)\s*[—\-:]?\s*(.*)/gi)];
+  const last = matches[matches.length - 1];
+  if (!last) {
+    return { passed: false, reason: 'No machine-readable verdict found in DevOps review.' };
+  }
+  return {
+    passed: last[1].toUpperCase() === 'PASS',
+    reason: last[2]?.trim() || (last[1].toUpperCase() === 'PASS' ? 'Passed.' : 'Failed.'),
+  };
+}
+
 function parseCodeChanges(output: string): CodeChange[] {
   try {
     const parsed = JSON.parse(output) as { files?: CodeChange[] };
@@ -125,7 +143,8 @@ export class AgentCoordinator {
         ...parseCodeChanges(frontendCode),
       ];
 
-      console.log('\nTask execution completed');
+      const verdict = parseVerdict(validation);
+      console.log(`\nTask execution completed — DevOps verdict: ${verdict.passed ? 'PASS' : 'FAIL'} (${verdict.reason})`);
 
       return {
         success: true,
@@ -136,6 +155,8 @@ export class AgentCoordinator {
         backendCode,
         frontendCode,
         validation,
+        validationPassed: verdict.passed,
+        validationReason: verdict.reason,
         codeChanges,
       };
     } catch (error) {
