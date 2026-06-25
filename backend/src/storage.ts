@@ -286,7 +286,7 @@ function toTaskRecord(
   };
 }
 
-class MemoryStorage implements StorageAdapter {
+export class MemoryStorage implements StorageAdapter {
   private tasks = new Map<string, TaskRecord>();
   private executions = new Map<string, AgentExecutionRecord[]>();
   private logs = new Map<string, ExecutionLogRecord[]>();
