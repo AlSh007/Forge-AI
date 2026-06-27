@@ -18,3 +18,5 @@ services:
         sync: false
       - key: CORS_ORIGIN
         sync: false
+      - key: DIRECT_URL
+        sync: false
