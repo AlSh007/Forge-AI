@@ -55,9 +55,9 @@ describe('makeRepoDispatcher', () => {
   });
 
   it('caps oversized file content', async () => {
-    const bigRepo: RepoAccess = { ...repo, async readFile() { return 'a'.repeat(10_000); } };
+    const bigRepo: RepoAccess = { ...repo, async readFile() { return 'a'.repeat(15_000); } };
     const out = await makeRepoDispatcher(bigRepo)('read_file', { path: 'big.ts' });
-    expect(out.length).toBeLessThan(10_000);
+    expect(out.length).toBeLessThan(15_000);
     expect(out).toMatch(/\[truncated\]$/);
   });
 });

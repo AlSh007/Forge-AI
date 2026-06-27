@@ -3,7 +3,7 @@ import { LLMTool, ToolDispatcher } from './client';
 
 // Bound tool-result sizes so a large file or wide listing can't blow the context
 // budget the coordinator works hard to stay under.
-const MAX_FILE_CHARS = 6_000;
+const MAX_FILE_CHARS = 12_000;
 const MAX_LISTED_FILES = 300;
 const MAX_SEARCH_RESULTS = 100;
 

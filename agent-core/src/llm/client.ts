@@ -1,10 +1,21 @@
 import axios, { AxiosError } from 'axios';
 
+// Primary code-generation model: Llama 3.3 70B (128K context, highest quality).
+// Falls back to Mixtral when the 70B daily quota is exhausted.
 const DEFAULT_MODEL = 'llama-3.3-70b-versatile';
+// Fast planning/review model: 8B instant, 6K TPM bucket. Use only for PM/Architect
+// (tiny prompts ≈1K tokens each, so both fit comfortably within the 6K/min limit).
+export const FAST_MODEL = 'llama-3.1-8b-instant';
+// Intermediate model: Llama 4 Scout has a separate 30K TPM bucket and works for
+// single-shot text generation (but NOT for tool-calling via the Groq compat API).
+export const SCOUT_MODEL = 'meta-llama/llama-4-scout-17b-16e-instruct';
+// Code-generation model: 70B is the only Groq model that reliably executes
+// tool calls via the OpenAI-compat API. Used only for Backend and Frontend.
+export const CODE_MODEL = 'llama-3.3-70b-versatile';
 const DEFAULT_MAX_TOKENS = 4096;
 const GROQ_BASE_URL = 'https://api.groq.com/openai/v1';
-const MAX_RETRIES = 4;
-const DEFAULT_MAX_TOOL_ITERATIONS = 4;
+const MAX_RETRIES = 8;
+const DEFAULT_MAX_TOOL_ITERATIONS = 8;
 
 // ─── OpenAI-compatible tool-calling types ───────────────────────────────────────
 
@@ -79,14 +90,20 @@ const chatCompletion: ChatTransport = async (req) => {
       const axiosErr = err as AxiosError;
       const status = axiosErr.response?.status;
 
-      if (status === 429 && attempt < MAX_RETRIES) {
-        // Respect Retry-After header if present, otherwise exponential backoff
+      // 429 = rate limited; 413 = Groq sometimes uses this when TPM is exhausted.
+      if ((status === 429 || status === 413) && attempt < MAX_RETRIES) {
         const retryAfter = axiosErr.response?.headers?.['retry-after'];
-        const waitMs = retryAfter
-          ? Number(retryAfter) * 1000
-          : Math.min(2 ** attempt * 5_000, 60_000);
+        const resetTokens = axiosErr.response?.headers?.['x-ratelimit-reset-tokens'];
+        const resetSecs = resetTokens
+          ? parseFloat(String(resetTokens))
+          : retryAfter
+            ? Number(retryAfter)
+            : Math.min(2 ** attempt * 5, 120);
+        // Enforce a 15-second minimum so the TPM bucket has time to meaningfully
+        // replenish before the next request, even when the header says <1s.
+        const waitMs = Math.max(Math.min(Math.ceil(resetSecs) * 1000, 120_000), 15_000);
 
-        console.log(`[LLM] Rate limited. Retrying in ${waitMs / 1000}s (attempt ${attempt + 1}/${MAX_RETRIES})`);
+        console.log(`[LLM] Rate limited (${status}). Retrying in ${waitMs / 1000}s (attempt ${attempt + 1}/${MAX_RETRIES})`);
         await sleep(waitMs);
         attempt++;
         continue;

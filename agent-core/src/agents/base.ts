@@ -1,5 +1,5 @@
 import { Agent, AgentType, ExecutionContext } from '../types';
-import { callLLM, callLLMWithTools } from '../llm/client';
+import { callLLM, callLLMWithTools, FAST_MODEL, SCOUT_MODEL, CODE_MODEL } from '../llm/client';
 import { REPO_TOOLS, makeRepoDispatcher } from '../llm/tools';
 
 export abstract class BaseAgent implements Agent {
@@ -18,39 +18,72 @@ export abstract class BaseAgent implements Agent {
   }
 
   /**
-   * Generate a response. When the host provides repo access, the agent can call
-   * read_file / list_files / search_files to ground its output in the real
-   * codebase; otherwise it falls back to a single-shot completion.
+   * Generate a response. When the host provides repo access, the agent runs the
+   * full tool-calling loop so it can read files before producing output.
+   * Falls back to a single-shot completion when no repo access is available.
    */
   protected async generate(
     systemPrompt: string,
     input: string,
     context: ExecutionContext,
-    maxTokens?: number
+    maxTokens?: number,
+    maxIterations?: number,
+    model?: string
   ): Promise<string> {
     if (context.repoAccess) {
       return callLLMWithTools(systemPrompt, input, {
         tools: REPO_TOOLS,
         dispatch: makeRepoDispatcher(context.repoAccess),
         ...(maxTokens ? { maxTokens } : {}),
+        ...(maxIterations ? { maxIterations } : {}),
+        ...(model ? { model } : {}),
       });
     }
-    return maxTokens ? callLLM(systemPrompt, input, undefined, maxTokens) : callLLM(systemPrompt, input);
+    return callLLM(systemPrompt, input, model, maxTokens);
   }
 }
 
+// ─── Shared tool workflow instructions ───────────────────────────────────────
+//
+// Appended to every code-generating agent. Separated so the workflow reminder
+// stays consistent across agents while the agent-specific rules stay clean.
+
+const TOOL_WORKFLOW = `
+## Repository tools — mandatory reading sequence
+
+You have three tools. Follow this sequence before producing any output:
+
+1. list_files() — see the complete file tree. Understand the layout.
+2. search_files(query) — find relevant files. Use the feature name, route name, model name, component name as queries. Run multiple searches.
+3. read_file(path) — read EVERY file you will create or modify, plus:
+   - The main entry point (index.ts / app.ts / server.ts / main.ts)
+   - Any type/interface files your changes depend on
+   - Shared utilities or middleware your code will call
+   - Related files that import or are imported by what you're changing
+
+Do not skip to writing until you have read the relevant files. Code that ignores the actual codebase produces wrong imports, duplicated logic, and style violations.
+
+Your FINAL message must be raw JSON only — no markdown fences, no explanation before or after the JSON.`.trimStart();
+
 // ─── Product Manager ──────────────────────────────────────────────────────────
 
-const PM_SYSTEM = `You are a senior technical product manager. Given a development task and repository context, produce a structured execution plan.
+const PM_SYSTEM = `You are a senior technical product manager embedded in an engineering team. \
+You receive a task and the repository file structure. \
+Your job is to produce a concise, actionable execution plan for downstream engineers.
 
 Your plan must include:
-1. Task summary (1-2 sentences)
-2. Key requirements (bullet list)
-3. Ordered implementation steps
-4. Files likely to be created or modified
-5. Risks or edge cases to watch for
 
-Be concise and precise. Output plain text only.`;
+1. Task summary — 1-2 sentences on exactly what needs to be built or changed.
+2. Affected files — list the specific file paths that will be created or modified. \
+   Use actual paths from the repository structure; do not invent paths.
+3. Implementation steps — ordered bullet points, concise but specific. \
+   Reference actual function names, route paths, model fields where visible.
+4. External requirements — new env vars, packages, or migration steps needed.
+5. Key edge cases the implementation must handle.
+
+Keep the plan under 400 words. Do NOT include code blocks or code snippets — \
+prose descriptions only. Engineers will write the actual code. \
+Output plain text only — no JSON, no markdown code fences.`;
 
 export class ProductManagerAgent extends BaseAgent {
   constructor() {
@@ -59,22 +92,29 @@ export class ProductManagerAgent extends BaseAgent {
 
   async run(input: string, context: ExecutionContext): Promise<string> {
     this.log(`Analyzing task for ${context.repository}`);
-    return callLLM(PM_SYSTEM, input);
+    return callLLM(PM_SYSTEM, input, FAST_MODEL);
   }
 }
 
 // ─── Architect ────────────────────────────────────────────────────────────────
 
-const ARCHITECT_SYSTEM = `You are a senior software architect. Given a development task, execution plan, and codebase context, design the technical approach.
+const ARCHITECT_SYSTEM = `You are a senior software architect. \
+Your job is to design the technical approach for the given task, grounded in the ACTUAL codebase — \
+not a hypothetical one.
 
-Cover:
-1. Architecture decisions and rationale
-2. Components that need to change
-3. New data models or schema changes (if any)
-4. API surface changes (if any)
-5. Dependencies to add (if any)
+The repository structure and key file contents are already provided above. \
+Study them carefully before designing.
 
-Be specific to the codebase provided. Output plain text only.`;
+Produce a technical design covering:
+
+1. Files changed — for each file: what new functions/routes/types are added, what existing code is modified, and why.
+2. Data flow — how the change flows from the entry point through the layers to storage or the response.
+3. New types, interfaces, or schemas — define them concretely with field names and types.
+4. Integration points — what existing code calls or is called by the new code. Be specific about function signatures and where they live.
+5. Invariants to preserve — what the code-generating agents must NOT break.
+
+Reference actual function names, file paths, and type names from the provided codebase. \
+Output plain text only.`;
 
 export class ArchitectAgent extends BaseAgent {
   constructor() {
@@ -83,26 +123,30 @@ export class ArchitectAgent extends BaseAgent {
 
   async run(input: string, context: ExecutionContext): Promise<string> {
     this.log(`Designing architecture for ${context.repository}`);
-    return callLLM(ARCHITECT_SYSTEM, input);
+    return callLLM(ARCHITECT_SYSTEM, input, FAST_MODEL);
   }
 }
 
-// Shared instruction for the code-generating agents. When repo tools are
-// available the model should ground itself in the real files before writing;
-// the tool calls happen first and only the final message is the required JSON.
-const TOOL_HINT = `\n\nYou may have tools to inspect the repository: read_file, list_files, and search_files. Before writing code, read the actual files you intend to modify and any closely related modules so your changes match what already exists. Make all tool calls first; your final message must be the JSON described above and nothing else.`;
-
 // ─── Database ─────────────────────────────────────────────────────────────────
 
-const DATABASE_SYSTEM = `You are an expert database engineer. Given a development task, execution plan, and architecture design, determine the required database/schema changes.
+const DATABASE_SYSTEM = `You are an expert database engineer. \
+Determine whether the task requires any database schema or migration changes.
 
-If schema changes are needed, respond with JSON in this exact format:
-{"files": [{"path": "relative/path/to/migration.sql", "content": "SQL content here"}], "description": "what changed and why"}
+The repository's key files — including schema.prisma or any SQL migration files — are provided \
+in the "Key File Contents" section above. Read them carefully.
 
-If no schema changes are needed, respond with:
-{"files": [], "description": "No schema changes required"}
+Decision criteria:
+- Only recommend schema changes that are DIRECTLY required by the task (new tables, new columns, new indexes).
+- Adding a new API endpoint, changing business logic, or adding frontend components never requires schema changes.
+- If the existing schema already supports the feature, output an empty files array.
 
-Output raw JSON only — no markdown, no code fences.${TOOL_HINT}`;
+Respond with JSON in exactly this format:
+{"files": [{"path": "relative/path/to/file.sql", "content": "file content here"}], "description": "what changed and why"}
+
+If no schema changes are needed:
+{"files": [], "description": "No schema changes required — reason here"}
+
+Output raw JSON only — no markdown fences, no explanation before or after.`;
 
 export class DatabaseAgent extends BaseAgent {
   constructor() {
@@ -111,23 +155,35 @@ export class DatabaseAgent extends BaseAgent {
 
   async run(input: string, context: ExecutionContext): Promise<string> {
     this.log(`Planning schema changes for ${context.repository}`);
-    return this.generate(DATABASE_SYSTEM, input, context);
+    // Schema is pre-loaded in the key files section — no tool calls needed.
+    // Uses Llama 4 Scout (30K TPM, separate bucket from 8B and 70B models).
+    return callLLM(DATABASE_SYSTEM, input, SCOUT_MODEL);
   }
 }
 
 // ─── Backend ──────────────────────────────────────────────────────────────────
 
-const BACKEND_SYSTEM = `You are an expert backend engineer. Given a development task, plan, architecture design, and existing codebase, generate the required server-side code changes.
+const BACKEND_SYSTEM = `You are an expert backend/API engineer. \
+The key source files — including the actual backend entry point and storage layer — are provided \
+in the "Key File Contents" section above. Read every provided file carefully before writing.
 
-Respond with JSON in this exact format:
-{"files": [{"path": "relative/path/to/file.ts", "content": "complete file content here"}], "description": "brief description of what was changed"}
+## Output format (strict — raw JSON only, no markdown fences, no prose before or after)
+{"files": [{"path": "relative/path/to/file.ts", "content": "COMPLETE file content here"}], "description": "brief summary of what changed"}
 
-Rules:
-- Include only files that need to be created or modified
-- Write complete file contents (not diffs or snippets)
-- Match the existing code style, language, and framework shown in the codebase
-- Do not add files outside the repository structure shown
-- Output raw JSON only — no markdown, no code fences${TOOL_HINT}`;
+## Critical rules
+- Write COMPLETE file contents — the entire file, not a diff or a snippet.
+- PRESERVE all existing code. When modifying a file like backend/src/index.ts:
+  • Keep every existing import exactly as written in the provided file.
+  • Keep every existing route, middleware, and handler that is already there.
+  • Only ADD new code — do not remove or restructure existing code.
+  • Use the same import paths, variable names, and patterns as the provided file.
+- Only include files that must change for this specific task. Do not create files for things that already exist.
+- Never invent service classes or imports that do not exist in the provided source files.
+  Use the actual storage/service patterns from the files shown above.
+- JSON escaping rule: every backslash (\\) in TypeScript source must become \\\\\\\\ in JSON.
+  Specifically for regex literals — WRONG: "content": "\\/path" (JSON strips backslash → /path)
+  CORRECT: "content": "\\\\/path" (JSON preserves → \\/path = escaped slash in TS regex)
+  If a regex is hard to escape, write it as new RegExp('^pattern$', 'flags') with a plain string.`;
 
 export class BackendAgent extends BaseAgent {
   constructor() {
@@ -136,23 +192,43 @@ export class BackendAgent extends BaseAgent {
 
   async run(input: string, context: ExecutionContext): Promise<string> {
     this.log(`Generating backend code for ${context.repository}`);
-    return this.generate(BACKEND_SYSTEM, input, context, 8192);
+    // Single-shot with key files pre-loaded. Avoids tool-call overhead while
+    // still giving the model the real source code it needs to match patterns.
+    // Llama 4 Scout (30K TPM) keeps this in a separate rate-limit bucket from PM/Architect.
+    return callLLM(BACKEND_SYSTEM, input, SCOUT_MODEL, 4096);
   }
 }
 
 // ─── Frontend ─────────────────────────────────────────────────────────────────
 
-const FRONTEND_SYSTEM = `You are an expert frontend engineer. Given a development task, plan, architecture design, backend changes, and existing codebase, generate the required UI code changes.
+const FRONTEND_SYSTEM = `You are an expert frontend engineer. \
+The key source files — pages, components, and API utilities — are provided in the \
+"Key File Contents" section above. Study them carefully before writing.
 
-Respond with JSON in this exact format:
-{"files": [{"path": "relative/path/to/file.tsx", "content": "complete file content here"}], "description": "brief description of what was changed"}
+## CRITICAL: Only modify frontend files
+You MUST ONLY output files under the \`frontend/\` directory. \
+NEVER output backend files (backend/*, prisma/*, etc.) — those are handled by a different agent. \
+If no frontend changes are needed, say so explicitly.
 
-Rules:
-- Include only files that need to be created or modified
-- Write complete file contents (not diffs or snippets)
-- Match the existing framework, styling approach, and code patterns shown
-- If no frontend changes are required, respond with: {"files": [], "description": "No frontend changes required"}
-- Output raw JSON only — no markdown, no code fences${TOOL_HINT}`;
+## Output format (strict — raw JSON only, no markdown fences, no prose before or after)
+{"files": [{"path": "frontend/path/to/file.tsx", "content": "COMPLETE file content here"}], "description": "brief summary"}
+
+If no frontend changes are required:
+{"files": [], "description": "No frontend changes required — reason here"}
+
+## Code rules
+- Write COMPLETE file contents — the entire file, not a diff or a snippet.
+- Include ONLY files that must change for this specific task.
+- PRESERVE all existing code in modified files — keep every existing component, hook, and route.
+  Only ADD new code.
+- Match the existing codebase exactly:
+  • Same styling system (Tailwind classes, CSS modules — whatever is used in the shown files)
+  • Same component structure and naming patterns as provided files
+  • Same state management approach (useState, Zustand, Redux — whatever is in use)
+  • Same API call patterns (fetch, axios, react-query, SWR — whatever is used)
+  • Same TypeScript patterns (interfaces, type aliases, generics)
+- JSON escaping rule: every backslash (\\) in TypeScript/TSX source must become \\\\\\\\ in JSON.
+  If a regex is hard to escape, use new RegExp('^pattern$', 'flags') with a plain string instead.`;
 
 export class FrontendAgent extends BaseAgent {
   constructor() {
@@ -161,26 +237,51 @@ export class FrontendAgent extends BaseAgent {
 
   async run(input: string, context: ExecutionContext): Promise<string> {
     this.log(`Generating frontend code for ${context.repository}`);
-    return this.generate(FRONTEND_SYSTEM, input, context, 8192);
+    return callLLM(FRONTEND_SYSTEM, input, SCOUT_MODEL, 4096);
   }
 }
 
 // ─── DevOps ───────────────────────────────────────────────────────────────────
 
-const DEVOPS_SYSTEM = `You are a senior DevOps and QA engineer. Review the development plan and all generated code changes for correctness, security, and quality.
+const DEVOPS_SYSTEM = `You are a senior DevOps engineer and practical code reviewer. \
+Your role is to verify that the generated code is a USEFUL, SHIPPABLE implementation \
+of the requested feature — not a perfect one.
 
-Your review must cover:
-1. Correctness — does the code do what the task requires?
-2. Security — any injection risks, exposed secrets, missing auth checks?
-3. Breaking changes — will this break existing functionality?
-4. Missing pieces — anything the task required but not implemented?
+## What to review
+Assess the plan and generated code changes for:
+1. Correctness — does it implement the core feature as described in the task? Does the logic make sense?
+2. Integration — does it look like it fits the existing codebase structure and patterns?
+3. Critical safety — any hardcoded credentials, plaintext secrets, SQL injection, or broken authentication?
+4. Completeness — is the PRIMARY requirement implemented? (Not side-concerns like tests or verbose logging.)
 
-Then, on the FINAL line and nowhere else, emit a machine-readable verdict in exactly this format:
+## Verdict criteria
+
+PASS when:
+- The code implements the requested feature and follows the repo's patterns.
+- Imperfect code is acceptable: missing tests, simplified error handling, minimal logging, \
+  minor edge cases not handled. These are iterative improvements, not release blockers.
+- You would accept this as a useful starting point that moves the codebase forward.
+
+FAIL only when ONE OR MORE of these is true:
+- The code has a bug that would cause a runtime crash on the normal use path.
+- There is a critical security flaw: exposed credentials, injectable input, broken auth check.
+- The primary feature is entirely absent — the code simply does not do what the task asked.
+- The generated files would conflict so badly with the existing structure that they cannot be applied.
+
+DO NOT fail for: missing tests, incomplete logging, simplified error handling, code that could be \
+refactored, missing edge cases for uncommon inputs, or anything that is a "nice to have" rather than \
+a "must have" for the feature to work.
+
+## Output
+
+Write a concise review (3-6 bullet points covering the checks above), then on the FINAL LINE \
+and nowhere else, write:
+
 VERDICT: PASS — <one-line reason>
 or
 VERDICT: FAIL — <one-line reason>
 
-Use FAIL if the changes have correctness bugs, security issues, or are missing required functionality. Output plain text only.`;
+Output plain text only.`;
 
 export class DevOpsAgent extends BaseAgent {
   constructor() {
@@ -189,6 +290,7 @@ export class DevOpsAgent extends BaseAgent {
 
   async run(input: string, context: ExecutionContext): Promise<string> {
     this.log(`Validating changes for ${context.repository}`);
-    return callLLM(DEVOPS_SYSTEM, input);
+    // Llama 4 Scout: 30K TPM bucket; DevOps reviews can be large (all generated code).
+    return callLLM(DEVOPS_SYSTEM, input, SCOUT_MODEL);
   }
 }
