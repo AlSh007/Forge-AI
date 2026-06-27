@@ -1,51 +1,10 @@
 import { randomUUID } from 'crypto';
-import { PrismaClient } from '@prisma/client';
+import { PrismaClient, TaskStatus, AgentType, ExecutionStatus, LogLevel, PRStatus } from '@prisma/client';
+
+export { TaskStatus, AgentType, ExecutionStatus, LogLevel, PRStatus };
 
 const DEFAULT_USER_EMAIL = 'local@forgeai.dev';
 const DEFAULT_USER_NAME = 'Local Demo User';
-
-export enum TaskStatus {
-  PENDING = 'PENDING',
-  PLANNING = 'PLANNING',
-  IN_PROGRESS = 'IN_PROGRESS',
-  VALIDATING = 'VALIDATING',
-  COMPLETED = 'COMPLETED',
-  FAILED = 'FAILED',
-  CANCELLED = 'CANCELLED',
-}
-
-export enum AgentType {
-  PRODUCT_MANAGER = 'PRODUCT_MANAGER',
-  ARCHITECT = 'ARCHITECT',
-  BACKEND = 'BACKEND',
-  FRONTEND = 'FRONTEND',
-  DATABASE = 'DATABASE',
-  DEVOPS = 'DEVOPS',
-}
-
-export enum ExecutionStatus {
-  PENDING = 'PENDING',
-  RUNNING = 'RUNNING',
-  SUCCESS = 'SUCCESS',
-  FAILED = 'FAILED',
-  CANCELLED = 'CANCELLED',
-}
-
-export enum LogLevel {
-  DEBUG = 'DEBUG',
-  INFO = 'INFO',
-  WARN = 'WARN',
-  ERROR = 'ERROR',
-}
-
-export enum PRStatus {
-  DRAFT = 'DRAFT',
-  READY = 'READY',
-  SUBMITTED = 'SUBMITTED',
-  APPROVED = 'APPROVED',
-  MERGED = 'MERGED',
-  REJECTED = 'REJECTED',
-}
 
 export interface PullRequestRecord {
   id: string;
