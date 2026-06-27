@@ -3,9 +3,8 @@ services:
     name: forgeai-backend
     env: node
     plan: free
-    buildCommand: npm install --include=dev && npm run build -w agent-core && npm run build -w backend && npx prisma generate --schema=backend/prisma/schema.prisma && npx prisma db push --schema=backend/prisma/schema.prisma --accept-data-loss
-    preDeployCommand: npx prisma db push --schema=backend/prisma/schema.prisma --accept-data-loss
-    startCommand: npm run start -w backend
+    buildCommand: npm install --include=dev && npm run build -w agent-core && npm run build -w backend && npx prisma generate --schema=backend/prisma/schema.prisma
+    startCommand: npx prisma db push --schema=backend/prisma/schema.prisma --accept-data-loss && npm run start -w backend
     healthCheckPath: /health
     envVars:
       - key: NODE_ENV
