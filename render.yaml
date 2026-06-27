@@ -1,0 +1,20 @@
+services:
+  - type: web
+    name: forgeai-backend
+    env: node
+    plan: free
+    buildCommand: npm install --include=dev && npm run build -w agent-core && npm run build -w backend && npx prisma generate --schema=backend/prisma/schema.prisma
+    preDeployCommand: npx prisma migrate deploy --schema=backend/prisma/schema.prisma
+    startCommand: npm run start -w backend
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: GROQ_API_KEY
+        sync: false
+      - key: GITHUB_TOKEN
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: CORS_ORIGIN
+        sync: false

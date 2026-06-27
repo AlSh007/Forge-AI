@@ -11,7 +11,8 @@ const app = express();
 const PORT = Number(process.env.PORT || 4000);
 
 // Middleware
-app.use(cors());
+const corsOrigin = process.env.CORS_ORIGIN;
+app.use(cors(corsOrigin ? { origin: corsOrigin } : undefined));
 app.use(express.json());
 
 const PROMPT_MAX_LENGTH = 2000;
