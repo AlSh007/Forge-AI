@@ -28,7 +28,10 @@ function extname(basename: string): string {
  * failure modes LLMs actually produce: malformed JSON, syntax errors, empty or
  * truncated content, and unsafe paths. Real ground truth to back the DevOps verdict.
  */
-export function validateChanges(changes: CodeChange[]): StaticValidationResult {
+export function validateChanges(
+  changes: CodeChange[],
+  originals: Record<string, string> = {}
+): StaticValidationResult {
   const issues: ValidationIssue[] = [];
 
   for (const change of changes) {
@@ -59,6 +62,33 @@ export function validateChanges(changes: CodeChange[]): StaticValidationResult {
     }
     if (content.includes(TRUNCATION_MARKER)) {
       issues.push({ path, severity: 'error', message: 'File content appears truncated (contains a truncation marker).' });
+    }
+
+    // Lossy-regeneration check — when an agent modifies an EXISTING file, its
+    // output should not be a shrunken copy of the original. The failure mode this
+    // catches (and how it shipped a broken README before): the model echoes the
+    // file it was shown and trails off partway through, emitting syntactically
+    // valid output that is really the original truncated mid-document. Markdown
+    // and other non-code files get no syntax check, so this is their only guard.
+    const original = originals[path] ?? originals[normalized];
+    if (original != null) {
+      const o = original.trimEnd();
+      const n = content.trimEnd();
+      // Exact prefix of the original but shorter → an echo that stopped early.
+      if (n.length < o.length && o.startsWith(n)) {
+        issues.push({
+          path,
+          severity: 'error',
+          message: `Modified file is a truncated copy of the original (${n.length}/${o.length} chars, exact prefix) — the agent echoed the existing file and stopped early.`,
+        });
+      } else if (o.length >= 400 && n.length < o.length * 0.5) {
+        // Not a prefix, but lost more than half its content — likely lossy.
+        issues.push({
+          path,
+          severity: 'error',
+          message: `Modified file is ${Math.round((1 - n.length / o.length) * 100)}% shorter than the original (${n.length}/${o.length} chars) — likely truncated or lossy regeneration.`,
+        });
+      }
     }
 
     // Type-specific syntax checks.

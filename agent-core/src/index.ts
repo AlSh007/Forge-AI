@@ -358,7 +358,7 @@ export class AgentCoordinator {
         ],
         context.repoContext
       );
-      const staticValidation = validateChanges(codeChanges);
+      const staticValidation = validateChanges(codeChanges, context.repoContext?.keyFiles);
       const staticSection = formatStaticResults(staticValidation);
 
       // DevOps only needs the task, the plan, and the generated files — not the
