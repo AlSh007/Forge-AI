@@ -201,7 +201,9 @@ export class BackendAgent extends BaseAgent {
     // Single-shot with key files pre-loaded. Avoids tool-call overhead while
     // still giving the model the real source code it needs to match patterns.
     // Llama 4 Scout (30K TPM) keeps this in a separate rate-limit bucket from PM/Architect.
-    return callLLM(BACKEND_SYSTEM, input, SCOUT_MODEL, 4096);
+    // 8192 tokens: a full-file rewrite easily exceeds 4096, and a cut-off response
+    // produces invalid JSON (dropped silently) or a truncated file (shipped as-is).
+    return callLLM(BACKEND_SYSTEM, input, SCOUT_MODEL, 8192);
   }
 }
 
@@ -243,7 +245,8 @@ export class FrontendAgent extends BaseAgent {
 
   async run(input: string, context: ExecutionContext): Promise<string> {
     this.log(`Generating frontend code for ${context.repository}`);
-    return callLLM(FRONTEND_SYSTEM, input, SCOUT_MODEL, 4096);
+    // 8192 tokens — see BackendAgent: a truncated full-file response ships broken.
+    return callLLM(FRONTEND_SYSTEM, input, SCOUT_MODEL, 8192);
   }
 }
 

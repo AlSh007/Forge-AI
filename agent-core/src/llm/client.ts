@@ -37,6 +37,8 @@ export interface LLMToolCall {
 export interface ChatResultMessage {
   content: string | null;
   tool_calls?: LLMToolCall[];
+  /** Why generation stopped. 'length' means the response was cut off at max_tokens. */
+  finish_reason?: string | null;
 }
 
 export interface ChatRequest {
@@ -72,7 +74,7 @@ const chatCompletion: ChatTransport = async (req) => {
   while (attempt <= MAX_RETRIES) {
     try {
       const response = await axios.post<{
-        choices: Array<{ message: ChatResultMessage }>;
+        choices: Array<{ message: ChatResultMessage; finish_reason?: string | null }>;
       }>(`${GROQ_BASE_URL}/chat/completions`, req, {
         headers: {
           Authorization: `Bearer ${getApiKey()}`,
@@ -81,11 +83,14 @@ const chatCompletion: ChatTransport = async (req) => {
         timeout: 120_000,
       });
 
-      const message = response.data.choices[0]?.message;
+      const choice = response.data.choices[0];
+      const message = choice?.message;
       if (!message) {
         throw new Error('Empty response from Groq');
       }
-      return message;
+      // Surface the choice-level finish_reason on the message so callers can tell
+      // a complete response from one cut off at max_tokens.
+      return { ...message, finish_reason: choice.finish_reason ?? message.finish_reason };
     } catch (err) {
       const axiosErr = err as AxiosError;
       const status = axiosErr.response?.status;
@@ -131,6 +136,12 @@ export async function callLLM(
       { role: 'user', content: userMessage },
     ],
   });
+  if (message.finish_reason === 'length') {
+    console.warn(
+      `[LLM] Response cut off at max_tokens=${maxTokens} (finish_reason=length). ` +
+        `Output is incomplete — raise max_tokens or reduce scope. Model: ${model}.`
+    );
+  }
   return message.content ?? '';
 }
 
