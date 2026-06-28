@@ -158,6 +158,49 @@ function parseCodeChanges(output: string): CodeChange[] {
   return [];
 }
 
+/** Normalises content for echo detection — ignores line-ending and trailing-whitespace noise. */
+function normalizeContent(s: string): string {
+  return s.replace(/\r\n/g, '\n').replace(/[ \t]+$/gm, '').trim();
+}
+
+/**
+ * Parses each code agent's output into CodeChange[] and assembles the final set, while:
+ *  - warning when an agent clearly tried to emit files but the JSON could not be parsed
+ *    (otherwise a parse failure is indistinguishable from a genuine "no changes"), and
+ *  - dropping files whose content is byte-for-byte identical to what the agent was shown
+ *    (no-op echoes that would otherwise produce an empty-diff PR).
+ */
+function collectCodeChanges(
+  agentOutputs: Array<{ name: string; output: string }>,
+  repoContext?: ExecutionContext['repoContext']
+): CodeChange[] {
+  const keyFiles = repoContext?.keyFiles ?? {};
+  const collected: CodeChange[] = [];
+
+  for (const { name, output } of agentOutputs) {
+    const parsed = parseCodeChanges(output);
+    const trimmed = output.trim();
+    // Output mentions a non-empty files array but nothing parsed → malformed JSON, not "no changes".
+    const claimedFiles = /"files"\s*:\s*\[\s*\{/.test(trimmed);
+    if (parsed.length === 0 && claimedFiles) {
+      console.warn(
+        `[coordinator] ${name} emitted a non-empty files array that could not be parsed into code changes ` +
+          `(likely malformed JSON escaping). Output length: ${trimmed.length} chars. No files collected from this agent.`
+      );
+    }
+    collected.push(...parsed);
+  }
+
+  return collected.filter((change) => {
+    const original = keyFiles[change.path];
+    if (original != null && normalizeContent(change.content) === normalizeContent(original)) {
+      console.warn(`[coordinator] Dropping ${change.path}: generated content is identical to the existing file (no-op echo).`);
+      return false;
+    }
+    return true;
+  });
+}
+
 const BUILD_ARTIFACT_SEGMENTS = new Set(['.next', 'node_modules', 'dist', 'build', 'coverage', 'out', '.git']);
 
 /**
@@ -307,11 +350,14 @@ export class AgentCoordinator {
 
       // Collect generated files and statically validate them before the DevOps
       // review, so the reviewer reasons over real, deterministic findings.
-      const codeChanges = [
-        ...parseCodeChanges(dbChanges),
-        ...parseCodeChanges(backendCode),
-        ...parseCodeChanges(frontendCode),
-      ];
+      const codeChanges = collectCodeChanges(
+        [
+          { name: 'Database', output: dbChanges },
+          { name: 'Backend', output: backendCode },
+          { name: 'Frontend', output: frontendCode },
+        ],
+        context.repoContext
+      );
       const staticValidation = validateChanges(codeChanges);
       const staticSection = formatStaticResults(staticValidation);
 

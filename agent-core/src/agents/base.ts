@@ -170,7 +170,13 @@ in the "Key File Contents" section above. Read every provided file carefully bef
 ## Output format (strict — raw JSON only, no markdown fences, no prose before or after)
 {"files": [{"path": "relative/path/to/file.ts", "content": "COMPLETE file content here"}], "description": "brief summary of what changed"}
 
+If no backend changes are required:
+{"files": [], "description": "No backend changes required — reason here"}
+
 ## Critical rules
+- NEVER echo a file back unchanged. If a file does not need to change for this task, do NOT
+  include it. If NO files need changing, return the empty files array shown above — do not
+  reproduce the files you were shown in the "Key File Contents" section.
 - Write COMPLETE file contents — the entire file, not a diff or a snippet.
 - PRESERVE all existing code. When modifying a file like backend/src/index.ts:
   • Keep every existing import exactly as written in the provided file.
